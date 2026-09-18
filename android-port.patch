@@ -44,6 +44,62 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  
  # Unified diagnostic verbosity, the same knob cmake/ps2.cmake and cmake/wii.cmake
  # expose. The desktop target left it undefined, so platform/Log.h fell back to 0
+diff -ruN orig/src/net/minecraft/src/TexturePackList.cpp new/src/net/minecraft/src/TexturePackList.cpp
+--- orig/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.615847143 +0000
++++ new/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.853650787 +0000
+@@ -82,7 +82,7 @@
+ 			if (lowerName.size() < 4 || lowerName.compare(lowerName.size() - 4, 4, ".zip") != 0) continue;
+ 
+ 			auto file = entry.path();
+-			std::string s = filename + ":" + std::to_string(fs::file_size(file)) + ":" + std::to_string(fs::last_write_time(file).time_since_epoch().count());
++			std::string s = filename + ":" + std::to_string(fs::file_size(file)) + ":" + std::to_string(static_cast<long long>(fs::last_write_time(file).time_since_epoch().count()));
+ 
+ 			try
+ 			{
+diff -ruN orig/src/net/minecraft/src/World.cpp new/src/net/minecraft/src/World.cpp
+--- orig/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.620793427 +0000
++++ new/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.854790285 +0000
+@@ -106,8 +106,8 @@
+ #include "platform/ExtendedProfiler.h"
+ #if PLATFORM_FAST_BLOCK_COLLISIONS || PLATFORM_EARLY_COLLISION_EXIT || PLATFORM_FLOAT_COLLISION_SWEEP
+ #include "platform/world/PlatformBlockCollisionSweeper.h"
+-#include "platform/world/StreamingFrameBudget.h"
+ #endif
++#include "platform/world/StreamingFrameBudget.h"
+ 
+ #if PLATFORM_BOUNDED_WORLD
+ static int_t platformFindTopSpawnBlockY(World *world, int_t x, int_t z)
+diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/WorldRenderer.h
+--- orig/src/net/minecraft/src/WorldRenderer.h	2026-09-18 19:00:01.625850278 +0000
++++ new/src/net/minecraft/src/WorldRenderer.h	2026-09-18 19:00:01.855077705 +0000
+@@ -55,13 +55,6 @@
+ #if defined(WII_PLATFORM) || defined(PS2_PLATFORM)
+ 	void renderExtraTerrainMeshes(int_t pass);
+ #endif
+-#if defined(WII_PLATFORM) || defined(PS2_PLATFORM) || PLATFORM_PC_LEGACY
+-	bool isTerrainBuildInProgress() const;
+-#ifdef PS2_PLATFORM
+-	// Drops an in-flight build and returns its staging lease. The renderer
+-	// stays dirty and restarts from scratch on a later scheduler step.
+-	void abandonTerrainBuild();
+-#endif
+ 	// A dirty mark caused by a light value change. With
+ 	// PLATFORM_COALESCE_MESH_REBUILDS an active build keeps going and is
+ 	// rebuilt once more after it completes, instead of restarting on every
+@@ -70,6 +63,13 @@
+ 	// Set by RenderGlobal for a block change next to the player; the scheduler
+ 	// runs these ahead of streaming work and to completion.
+ 	bool urgentRebuild = false;
++#if defined(WII_PLATFORM) || defined(PS2_PLATFORM) || PLATFORM_PC_LEGACY
++	bool isTerrainBuildInProgress() const;
++#ifdef PS2_PLATFORM
++	// Drops an in-flight build and returns its staging lease. The renderer
++	// stays dirty and restarts from scratch on a later scheduler step.
++	void abandonTerrainBuild();
++#endif
+ #if PLATFORM_PS2 && MC_LOG_LEVEL >= 2
+ 	// Monotonic microseconds at the edit that set urgentRebuild; the urgent lane
+ 	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
 +++ new/src/pc/Main.cpp	2026-09-18 18:14:28.447746429 +0000
@@ -56,7 +112,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #include <cctype>
 diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
 --- orig/src/pc/linux/java/File.cpp	2026-09-18 18:14:00.395865867 +0000
-+++ new/src/pc/linux/java/File.cpp	2026-09-18 18:14:28.448343506 +0000
++++ new/src/pc/linux/java/File.cpp	2026-09-18 19:00:01.853534784 +0000
 @@ -23,6 +23,9 @@
  #endif
  
@@ -67,6 +123,15 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  
  static std::string ToPath(const jstring &path)
  {
+@@ -114,7 +117,7 @@
+      * that struct stat has a struct timespec st_mtim member. We need this
+      * check because there are some platforms that claim to be POSIX 2008
+      * compliant but which do not have st_mtim... */
+-	#if (PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime)
++	#if defined(__ANDROID__) || ((PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime))
+         return buffer.st_mtim.tv_sec * 1000LL + buffer.st_mtim.tv_nsec / 1000000LL;
+ 	#else
+ 		return buffer.st_mtime * 1000LL + buffer.st_mtimespec.tv_nsec / 1000000LL;
 @@ -235,6 +238,10 @@
  File *File::openWorkingDirectory(const jstring &name)
  {
