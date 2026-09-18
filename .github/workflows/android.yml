@@ -1,0 +1,82 @@
+name: Android build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Fetch missing dependencies
+        shell: bash
+        run: |
+          if [ ! -f external/SDL_net/CMakeLists.txt ]; then
+            rm -rf external/SDL_net
+            git clone --depth 1 --branch SDL2 https://github.com/libsdl-org/SDL_net external/SDL_net
+          fi
+          if [ ! -f external/gl4es/CMakeLists.txt ]; then
+            rm -rf external/gl4es
+            git clone --depth 1 https://github.com/ptitSeb/gl4es external/gl4es
+          fi
+
+      - name: Apply Android patch
+        shell: bash
+        run: |
+          cp android.cmake cmake/android.cmake
+          if grep -q 'cmake/android.cmake' CMakeLists.txt; then
+            echo "Patch already applied"
+          else
+            patch -p1 -l < android-port.patch
+          fi
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log
+
+      - name: Build (keep going to collect every error)
+        shell: bash
+        run: |
+          cmake --build build --target main -- -k 0 2>&1 | tee build.log
+
+      - name: Error summary
+        if: always()
+        shell: bash
+        run: |
+          echo "=== first errors ==="
+          grep -nE "CMake Error|error:|FAILED:|undefined reference|fatal error" configure.log build.log 2>/dev/null | head -150 || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.abi }}
+          path: |
+            configure.log
+            build.log
+          if-no-files-found: ignore
+
+      - name: Upload libs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libs-${{ matrix.abi }}
+          path: |
+            build/libmain.so
+            build/external/SDL2/libSDL2.so
+          if-no-files-found: warn
