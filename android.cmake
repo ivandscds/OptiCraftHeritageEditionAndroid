@@ -50,6 +50,9 @@ add_subdirectory(external/glad EXCLUDE_FROM_ALL)
 add_subdirectory(external/zlib EXCLUDE_FROM_ALL)
 
 set(BUILD_SHARED_LIBS OFF)
+if(NOT TARGET SDL2::SDL2-static)
+    add_library(SDL2::SDL2-static ALIAS SDL2)
+endif()
 set(SDL2NET_SAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/SDL_net EXCLUDE_FROM_ALL)
 
