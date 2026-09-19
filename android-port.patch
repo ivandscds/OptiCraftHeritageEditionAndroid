@@ -1,7 +1,7 @@
 diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
 --- orig/CMakeLists.txt	2026-09-18 18:14:00.373740144 +0000
-+++ new/CMakeLists.txt	2026-09-18 18:14:28.447594003 +0000
-@@ -47,6 +47,14 @@
++++ new/CMakeLists.txt	2026-09-19 22:58:56.228264255 +0000
+@@ -47,6 +47,17 @@
      return()
  endif()
  
@@ -9,6 +9,9 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
 +# defines ANDROID) builds libmain.so for SDL's SDLActivity and return()s, same
 +# shape as the PS2/Wii branches above.
 +if(ANDROID)
++    # fdlibm reads the words of a double through *(int*)&x.
++    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")
++    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing")
 +    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/android.cmake)
 +    return()
 +endif()
@@ -16,7 +19,7 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  enable_testing()
  
  function(opticraft_add_optional_test target test_source)
-@@ -164,7 +172,7 @@
+@@ -164,7 +175,7 @@
  # Build the desktop target from common code plus the PC tree. Foreign console
  # sources are never discovered, so adding a new Wii/PS2 .cpp cannot silently
  # enter a desktop link.
@@ -25,7 +28,7 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  set(OPTICRAFT_MINIZIP_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib/contrib/minizip/ioapi.c"
      "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib/contrib/minizip/unzip.c"
-@@ -175,15 +183,15 @@
+@@ -175,15 +186,15 @@
  )
  
  if(WIN32)
@@ -44,6 +47,23 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  
  # Unified diagnostic verbosity, the same knob cmake/ps2.cmake and cmake/wii.cmake
  # expose. The desktop target left it undefined, so platform/Log.h fell back to 0
+diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
+--- orig/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.901063291 +0000
++++ new/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.933083356 +0000
+@@ -24,6 +24,13 @@
+ #endif
+ #endif
+ 
++/* aarch64 (Android) and other little-endian targets match none of the names above,
++   which silently selected the big-endian __HI/__LO layout and made sqrt/sin/cos/pow/
++   atan2/log return garbage or NaN. Ask the compiler instead. */
++#if !defined(__LITTLE_ENDIAN) && defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
++#define __LITTLE_ENDIAN 1234
++#endif
++
+ #ifdef __LITTLE_ENDIAN
+ #define __HI(x) *(1+(int*)&x)
+ #define __LO(x) *(int*)&x
 diff -ruN orig/src/net/minecraft/src/TexturePackList.cpp new/src/net/minecraft/src/TexturePackList.cpp
 --- orig/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.615847143 +0000
 +++ new/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.853650787 +0000
@@ -477,8 +497,8 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  
 diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenGlRenderBackend.cpp
 --- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:00.387082415 +0000
-+++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-19 18:58:21.022446385 +0000
-@@ -14,6 +14,124 @@
++++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-19 22:58:56.228614111 +0000
+@@ -14,6 +14,134 @@
  #include <cstdio>
  #include <cstring>
  
@@ -487,12 +507,22 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
 +// (goes to last_run.log). Stops checking after 40 errors or 60000 calls to stay cheap.
 +static int pcGlTraceReported = 0;
 +static int pcGlTraceChecks = 0;
++static int pcGlTraceSeenLine[64];
++static GLenum pcGlTraceSeenError[64];
 +static void pcGlTraceCheck(const char *call, int line)
 +{
-+	if (pcGlTraceReported >= 40 || ++pcGlTraceChecks > 60000)
++	if (pcGlTraceReported >= 64 || ++pcGlTraceChecks > 200000)
 +		return;
-+	for (GLenum e = glad_glGetError(); e != GL_NO_ERROR && pcGlTraceReported < 40; e = glad_glGetError())
++	for (GLenum e = glad_glGetError(); e != GL_NO_ERROR && pcGlTraceReported < 64; e = glad_glGetError())
 +	{
++		bool seen = false; // report each (call site, error) only once
++		for (int i = 0; i < pcGlTraceReported; ++i)
++			if (pcGlTraceSeenLine[i] == line && pcGlTraceSeenError[i] == e)
++				seen = true;
++		if (seen)
++			continue;
++		pcGlTraceSeenLine[pcGlTraceReported] = line;
++		pcGlTraceSeenError[pcGlTraceReported] = e;
 +		++pcGlTraceReported;
 +		std::fprintf(stderr, "[glerr] 0x%04x after %s (PcOpenGlRenderBackend.cpp:%d)\n", e, call, line);
 +	}
@@ -603,7 +633,7 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
  
  #ifndef GL_NEAREST_MIPMAP_LINEAR
  #define GL_NEAREST_MIPMAP_LINEAR 0x2702
-@@ -55,11 +173,19 @@
+@@ -55,11 +183,19 @@
      return major > 1 || (major == 1 && minor >= 2);
  }
  
@@ -625,6 +655,29 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
  	return f;
  }
  
+@@ -347,6 +483,7 @@
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mipmapLevel > 0 ? mipmapLevel : 0);
+     }
+ 
++#if !defined(__ANDROID__) // gl4es rejects the anisotropy enums (GL_INVALID_ENUM every time)
+     if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") == SDL_TRUE)
+     {
+         GLfloat maximum = 1.0f;
+@@ -355,10 +492,14 @@
+         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                         requested < maximum ? requested : maximum);
+     }
++#endif
+ }
+ 
+ int renderGetMaxAnisotropy()
+ {
++#if defined(__ANDROID__)
++    return 1;
++#endif
+     if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") != SDL_TRUE)
+         return 1;
+     GLfloat maximum = 1.0f;
 diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
 --- orig/src/platform/Resources_PC.cpp	2026-09-18 18:14:00.391455966 +0000
 +++ new/src/platform/Resources_PC.cpp	2026-09-19 00:44:26.198822922 +0000
