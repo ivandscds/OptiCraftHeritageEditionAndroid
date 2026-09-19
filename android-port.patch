@@ -102,7 +102,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-18 18:14:28.447746429 +0000
++++ new/src/pc/Main.cpp	2026-09-19 01:16:15.935985965 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -110,6 +110,172 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #include "SDL.h"
  
  #include <cctype>
+@@ -16,6 +18,17 @@
+ #include "lwjgl/GLContext.h"
+ #include "pc/render/PcRenderBackend.h"
+ 
++#if defined(__ANDROID__)
++#include <cerrno>
++#include <csignal>
++#include <cstdio>
++#include <exception>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include "platform/Resources.h"
++#endif
++
+ namespace
+ {
+ std::string trimUsername(std::string value)
+@@ -77,6 +90,89 @@
+ 	return 0;
+ }
+ 
++#if defined(__ANDROID__)
++// Android has no console, so a failed start looks like the app simply closing.
++// Everything the game prints goes to last_run.log; if the previous run did not
++// end with the clean-exit marker, its tail is shown in a dialog on the next start.
++int g_androidLogFd = -1;
++const char kCleanExitMarker[] = "--- clean exit ---";
++
++void androidSignalHandler(int sig)
++{
++	const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : sig == SIGBUS ? "SIGBUS" : sig == SIGFPE ? "SIGFPE" : sig == SIGILL ? "SIGILL" : "signal";
++	char buf[80];
++	const int n = std::snprintf(buf, sizeof(buf), "\n*** CRASH: %s (%d)\n", name, sig);
++	if (g_androidLogFd >= 0 && n > 0)
++	{
++		const ssize_t ignored = write(g_androidLogFd, buf, static_cast<size_t>(n));
++		(void)ignored;
++	}
++	std::signal(sig, SIG_DFL);
++	std::raise(sig);
++}
++
++std::string androidReadTail(const std::string &path, size_t maxBytes)
++{
++	std::ifstream in(path, std::ios::binary | std::ios::ate);
++	if (!in)
++		return std::string();
++	const std::streamoff size = in.tellg();
++	const std::streamoff start = size > static_cast<std::streamoff>(maxBytes) ? size - static_cast<std::streamoff>(maxBytes) : 0;
++	in.seekg(start);
++	std::string out(static_cast<size_t>(size - start), '\0');
++	in.read(&out[0], static_cast<std::streamsize>(out.size()));
++	return out;
++}
++
++void androidLogOutput(void *, int, SDL_LogPriority, const char *message)
++{
++	std::fprintf(stderr, "[SDL] %s\n", message);
++}
++
++void androidStartDiagnostics()
++{
++	const char *dir = SDL_AndroidGetInternalStoragePath();
++	if (!dir)
++		return;
++	const std::string path = std::string(dir) + "/last_run.log";
++
++	const std::string previous = androidReadTail(path, 1800);
++	if (!previous.empty() && previous.find(kCleanExitMarker) == std::string::npos)
++		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: la ejecucion anterior termino mal", previous.c_str(), nullptr);
++
++	g_androidLogFd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
++	if (g_androidLogFd < 0)
++		return;
++	dup2(g_androidLogFd, 1);
++	dup2(g_androidLogFd, 2);
++	std::setvbuf(stdout, nullptr, _IONBF, 0);
++	std::setvbuf(stderr, nullptr, _IONBF, 0);
++	SDL_LogSetOutputFunction(androidLogOutput, nullptr);
++	for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL })
++		std::signal(sig, androidSignalHandler);
++	std::fprintf(stderr, "[boot] log started\n");
++}
++
++bool androidHasGameData()
++{
++	const std::filesystem::path base(PlatformResources::baseDir());
++	std::error_code ec;
++	if (std::filesystem::exists(base / "assets.pak", ec) || std::filesystem::exists(base / "assets", ec))
++		return true;
++	const std::string message =
++		"No encuentro los assets del juego.\n\nBusque en: " + base.string() +
++		"\n\nCopia las carpetas 'assets' y 'resources' (o 'assets.pak') a /sdcard/OptiCraft/ "
++		"y dale el permiso de acceso a todos los archivos, o copialas a la carpeta Android/data/org.opticraft.heritage/files/.";
++	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft", message.c_str(), nullptr);
++	std::fprintf(stderr, "[boot] no game data in %s\n%s\n", base.string().c_str(), kCleanExitMarker);
++	return false;
++}
++
++#define BOOT_LOG(text) std::fprintf(stderr, "[boot] %s\n", text)
++#else
++#define BOOT_LOG(text) ((void)0)
++#endif
++
+ std::string loadUsername()
+ {
+ 	const std::filesystem::path path =
+@@ -97,13 +193,16 @@
+ }
+ }
+ 
+-int main(int argc, char *argv[])
++int gameMain(int argc, char *argv[])
+ {
++	BOOT_LOG("SDL_Init");
+ 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER | SDL_INIT_AUDIO) < 0)
+ 		throw SDLException();
++	BOOT_LOG("SDL ready");
+ 	pcRenderBackendSetRequested(loadRenderBackendPreference());
+ 	lwjgl::GLContext::setRequestedSamples(loadOptiFineAaLevel());
+ 	lwjgl::GLContext::instantiate();
++	BOOT_LOG("GL context ready");
+ #if PLATFORM_PC_LEGACY
+ 	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
+ #endif
+@@ -116,7 +215,39 @@
+ 	if (argc >= 3 && std::strlen(argv[2]) > 1)
+ 		auth = argv[2];
+ 
++	BOOT_LOG("starting game");
+ 	Minecraft::start(&username, &auth);
+ 
+ 	return 0;
+ }
++
++int main(int argc, char *argv[])
++{
++#if defined(__ANDROID__)
++	androidStartDiagnostics();
++	if (!androidHasGameData())
++		return 1;
++	try
++	{
++		const int rc = gameMain(argc, argv);
++		std::fprintf(stderr, "%s\n", kCleanExitMarker);
++		return rc;
++	}
++	catch (const std::exception &e)
++	{
++		std::fprintf(stderr, "[fatal] %s\n", e.what());
++		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: error", e.what(), nullptr);
++		std::fprintf(stderr, "%s\n", kCleanExitMarker);
++		return 1;
++	}
++	catch (...)
++	{
++		std::fprintf(stderr, "[fatal] unknown exception\n");
++		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: error", "Excepcion desconocida al iniciar.", nullptr);
++		std::fprintf(stderr, "%s\n", kCleanExitMarker);
++		return 1;
++	}
++#else
++	return gameMain(argc, argv);
++#endif
++}
 diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
 --- orig/src/pc/linux/java/File.cpp	2026-09-18 18:14:00.395865867 +0000
 +++ new/src/pc/linux/java/File.cpp	2026-09-18 19:00:01.853534784 +0000
