@@ -52,6 +52,74 @@ jobs:
         run: |
           cmake --build build --target main -- -k 0 2>&1 | tee build.log
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Package APK
+        if: success()
+        shell: bash
+        run: |
+          set -e
+          rm -rf apk
+          cp -r external/SDL2/android-project apk
+          chmod +x apk/gradlew
+
+          # App name and storage access: game data is read from /sdcard/OptiCraft
+          # (needs "All files access") or from the app's own Android/data folder.
+          MANIFEST=apk/app/src/main/AndroidManifest.xml
+          sed -i 's|<uses-permission android:name="android.permission.VIBRATE" />|&\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />|' "$MANIFEST"
+          sed -i 's|<application |<application android:requestLegacyExternalStorage="true" |' "$MANIFEST"
+          sed -i 's|>Game<|>OptiCraft<|' apk/app/src/main/res/values/strings.xml
+          grep -n 'EXTERNAL_STORAGE\|requestLegacy' "$MANIFEST"
+
+          # Minimal app module: SDL's Java sources + the prebuilt native libs.
+          cat > apk/app/build.gradle <<'GRADLE'
+          apply plugin: 'com.android.application'
+
+          android {
+              namespace "org.libsdl.app"
+              compileSdkVersion 34
+              defaultConfig {
+                  applicationId "org.opticraft.heritage"
+                  minSdkVersion 24
+                  targetSdkVersion 34
+                  versionCode 1
+                  versionName "1.0"
+                  ndk { abiFilters 'arm64-v8a' }
+              }
+              buildTypes {
+                  release { minifyEnabled false }
+              }
+              lint { abortOnError false }
+          }
+
+          dependencies {
+              implementation fileTree(include: ['*.jar'], dir: 'libs')
+          }
+          GRADLE
+
+          LIBDIR=apk/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$LIBDIR"
+          cp "$(find build -maxdepth 1 -name libmain.so | head -n1)" "$LIBDIR/libmain.so"
+          cp "$(find build -name libSDL2.so | head -n1)" "$LIBDIR/libSDL2.so"
+          STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          "$STRIP" --strip-unneeded "$LIBDIR"/*.so || true
+          ls -la "$LIBDIR"
+
+          cd apk
+          ./gradlew --no-daemon --console=plain assembleDebug 2>&1 | tee ../apk.log
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: apk/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
       - name: Error summary
         if: always()
         shell: bash
@@ -67,6 +135,7 @@ jobs:
           path: |
             configure.log
             build.log
+            apk.log
           if-no-files-found: ignore
 
       - name: Upload libs
