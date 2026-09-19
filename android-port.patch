@@ -332,19 +332,20 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  		return new File_Impl("");
 diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
 --- orig/src/pc/lwjgl/GLContext.cpp	2026-09-18 18:14:00.382565324 +0000
-+++ new/src/pc/lwjgl/GLContext.cpp	2026-09-19 17:59:07.076844817 +0000
-@@ -13,6 +13,10 @@
++++ new/src/pc/lwjgl/GLContext.cpp	2026-09-19 18:29:58.214814484 +0000
+@@ -13,6 +13,11 @@
  #endif
  
  #include "SDL.h"
 +#if defined(__ANDROID__)
 +#include <cstdio>
++#include <cstdlib>
 +#include <gl4esinit.h>
 +#endif
  
  // #define MC_DEBUG_GL
  
-@@ -174,9 +178,16 @@
+@@ -174,9 +179,16 @@
  
  		pcRenderBackendSetActive(PcRenderBackendType::OpenGL);
  
@@ -361,13 +362,17 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  		SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
  		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
  
-@@ -224,8 +235,32 @@
+@@ -224,8 +236,36 @@
  		if (window == nullptr || gl_context == nullptr)
  			throw SDLException();
  
 +#if defined(__ANDROID__)
 +		// gl4es is linked statically with NOX11/NOEGL: SDL owns the EGL context,
 +		// gl4es only needs to know how to look up the GLES entry points.
++		// gl4es' hardware probe creates its own EGL context on the default display,
++		// unbinds it and calls eglTerminate() - which invalidates SDL's context and turns every
++		// later GL call into a silent no-op. Skip the probe (ES2 defaults are used instead).
++		setenv("LIBGL_NOTEST", "1", 1);
 +		set_getprocaddress(SDL_GL_GetProcAddress);
 +		initialize_gl4es();
 +		if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(gl4es_GetProcAddress)))
