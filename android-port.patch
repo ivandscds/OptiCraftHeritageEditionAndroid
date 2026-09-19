@@ -218,16 +218,34 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
  
 diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
 --- orig/src/platform/Resources_PC.cpp	2026-09-18 18:14:00.391455966 +0000
-+++ new/src/platform/Resources_PC.cpp	2026-09-18 18:14:28.448240031 +0000
-@@ -8,6 +8,12 @@
++++ new/src/platform/Resources_PC.cpp	2026-09-19 00:44:26.198822922 +0000
+@@ -8,6 +8,30 @@
  
  std::string PlatformResources::baseDir()
  {
 +#if defined(__ANDROID__)
-+    // No exe directory on Android: assets.pak, .minecraft/ and username.txt live in
-+    // the app's external files dir (/sdcard/Android/data/<package>/files/).
-+    if (const char* external = SDL_AndroidGetExternalStoragePath())
-+        return std::string(external) + "/";
++    // No exe directory on Android. Game data (assets.pak, or loose assets/ and
++    // resources/) is looked up in the app's external files dir first
++    // (/sdcard/Android/data/<package>/files/), then in /sdcard/OptiCraft, which is
++    // easier to fill from a file manager but needs the "All files access" permission.
++    static const std::string androidDir = []() -> std::string {
++        namespace fs = std::filesystem;
++        std::string appDir;
++        if (const char* external = SDL_AndroidGetExternalStoragePath())
++            appDir = external;
++        const std::string candidates[] = { appDir, "/sdcard/OptiCraft", "/storage/emulated/0/OptiCraft" };
++        for (const std::string& dir : candidates)
++        {
++            if (dir.empty())
++                continue;
++            std::error_code ec;
++            if (fs::exists(fs::path(dir) / "assets.pak", ec) || fs::exists(fs::path(dir) / "assets", ec))
++                return dir + "/";
++        }
++        return appDir.empty() ? std::string() : appDir + "/";
++    }();
++    if (!androidDir.empty())
++        return androidDir;
 +#endif
      char* base = SDL_GetBasePath();
      if (base)
