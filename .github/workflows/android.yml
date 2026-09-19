@@ -45,7 +45,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=${{ matrix.abi }} \
             -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMC_LOG_LEVEL=1 2>&1 | tee configure.log
 
       - name: Build (keep going to collect every error)
         shell: bash
@@ -100,6 +101,122 @@ jobs:
               implementation fileTree(include: ['*.jar'], dir: 'libs')
           }
           GRADLE
+
+          # Launcher screen that asks for storage access, then starts the SDL activity.
+          JAVA_DIR=apk/app/src/main/java/org/opticraft/heritage
+          mkdir -p "$JAVA_DIR"
+          cat > "$JAVA_DIR/LauncherActivity.java" <<'JAVA'
+          package org.opticraft.heritage;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.provider.Settings;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class LauncherActivity extends Activity {
+              private static final int REQ_STORAGE = 42;
+
+              private boolean hasAccess() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      return Environment.isExternalStorageManager();
+                  }
+                  return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                      && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+              }
+
+              private void startGame() {
+                  startActivity(new Intent(this, org.libsdl.app.SDLActivity.class));
+                  finish();
+              }
+
+              private void askPermission() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      try {
+                          startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                              Uri.parse("package:" + getPackageName())));
+                      } catch (Exception e) {
+                          try {
+                              startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                          } catch (Exception e2) {
+                              // No settings screen available on this device.
+                          }
+                      }
+                  } else {
+                      requestPermissions(new String[] {
+                          Manifest.permission.READ_EXTERNAL_STORAGE,
+                          Manifest.permission.WRITE_EXTERNAL_STORAGE }, REQ_STORAGE);
+                  }
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setGravity(Gravity.CENTER);
+                  int pad = (int) (24 * getResources().getDisplayMetrics().density);
+                  root.setPadding(pad, pad, pad, pad);
+
+                  TextView text = new TextView(this);
+                  text.setText("OptiCraft necesita acceso a todos los archivos para leer los assets "
+                      + "desde /sdcard/OptiCraft/.\n\nToca el primer boton, activa el permiso y vuelve atras.");
+                  text.setTextSize(16);
+                  root.addView(text);
+
+                  Button grant = new Button(this);
+                  grant.setText("Dar permiso de archivos");
+                  grant.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) { askPermission(); }
+                  });
+                  root.addView(grant);
+
+                  Button open = new Button(this);
+                  open.setText("Abrir el juego igual");
+                  open.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) { startGame(); }
+                  });
+                  root.addView(open);
+
+                  setContentView(root);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  if (hasAccess()) {
+                      startGame();
+                  }
+              }
+          }
+          JAVA
+
+          python3 - <<'PY'
+          import re
+          p = 'apk/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          launcher = re.compile(r'<intent-filter>\s*<action android:name="android.intent.action.MAIN" />\s*<category android:name="android.intent.category.LAUNCHER" />\s*</intent-filter>')
+          assert launcher.search(s), 'launcher intent-filter not found'
+          s = launcher.sub('', s, count=1)
+          act = ('<activity android:name="org.opticraft.heritage.LauncherActivity"'
+                 ' android:label="@string/app_name" android:exported="true">'
+                 '<intent-filter><action android:name="android.intent.action.MAIN" />'
+                 '<category android:name="android.intent.category.LAUNCHER" /></intent-filter>'
+                 '</activity>\n    ')
+          assert '</application>' in s
+          s = s.replace('</application>', act + '</application>', 1)
+          open(p, 'w').write(s)
+          PY
+          grep -n 'LauncherActivity' "$MANIFEST"
 
           LIBDIR=apk/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$LIBDIR"
