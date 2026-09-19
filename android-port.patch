@@ -102,7 +102,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-19 17:59:07.077092684 +0000
++++ new/src/pc/Main.cpp	2026-09-19 18:58:21.022673713 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -110,17 +110,22 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #include "SDL.h"
  
  #include <cctype>
-@@ -16,6 +18,17 @@
+@@ -16,6 +18,22 @@
  #include "lwjgl/GLContext.h"
  #include "pc/render/PcRenderBackend.h"
  
 +#if defined(__ANDROID__)
 +#include <cerrno>
 +#include <csignal>
++#include <cstdint>
 +#include <cstdio>
++#include <cstdlib>
++#include <cxxabi.h>
++#include <dlfcn.h>
 +#include <exception>
 +#include <fcntl.h>
 +#include <unistd.h>
++#include <unwind.h>
 +
 +#include "platform/Resources.h"
 +#endif
@@ -128,7 +133,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  namespace
  {
  std::string trimUsername(std::string value)
-@@ -77,6 +90,110 @@
+@@ -77,6 +95,160 @@
  	return 0;
  }
  
@@ -139,6 +144,54 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +int g_androidLogFd = -1;
 +const char kCleanExitMarker[] = "--- clean exit ---";
 +
++struct AndroidBacktrace
++{
++	void **current;
++	void **end;
++};
++
++_Unwind_Reason_Code androidUnwindCallback(struct _Unwind_Context *context, void *arg)
++{
++	AndroidBacktrace *state = static_cast<AndroidBacktrace *>(arg);
++	const uintptr_t pc = _Unwind_GetIP(context);
++	if (pc)
++	{
++		if (state->current == state->end)
++			return _URC_END_OF_STACK;
++		*state->current++ = reinterpret_cast<void *>(pc);
++	}
++	return _URC_NO_REASON;
++}
++
++// Best effort (not async-signal-safe, but the process is dying anyway): one line per frame,
++// "library+offset  function". Function names come from the dynamic symbol table.
++void androidWriteBacktrace(int fd)
++{
++	void *frames[40];
++	AndroidBacktrace state = { frames, frames + 40 };
++	_Unwind_Backtrace(androidUnwindCallback, &state);
++	const int count = static_cast<int>(state.current - frames);
++	for (int i = 0; i < count; i++)
++	{
++		Dl_info info;
++		if (dladdr(frames[i], &info) && info.dli_fbase)
++		{
++			const char *lib = info.dli_fname ? std::strrchr(info.dli_fname, '/') : nullptr;
++			lib = lib ? lib + 1 : (info.dli_fname ? info.dli_fname : "?");
++			int status = 0;
++			char *demangled = info.dli_sname ? abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status) : nullptr;
++			dprintf(fd, "  #%02d %s+0x%lx  %s\n", i, lib,
++			        static_cast<unsigned long>(reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(info.dli_fbase)),
++			        demangled ? demangled : (info.dli_sname ? info.dli_sname : "?"));
++			std::free(demangled);
++		}
++		else
++		{
++			dprintf(fd, "  #%02d %p\n", i, frames[i]);
++		}
++	}
++}
++
 +void androidSignalHandler(int sig)
 +{
 +	const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : sig == SIGBUS ? "SIGBUS" : sig == SIGFPE ? "SIGFPE" : sig == SIGILL ? "SIGILL" : "signal";
@@ -148,6 +201,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	{
 +		const ssize_t ignored = write(g_androidLogFd, buf, static_cast<size_t>(n));
 +		(void)ignored;
++		androidWriteBacktrace(g_androidLogFd);
 +	}
 +	std::signal(sig, SIG_DFL);
 +	std::raise(sig);
@@ -178,7 +232,8 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +		return;
 +	const std::string path = std::string(dir) + "/last_run.log";
 +
-+	const std::string previous = androidReadTail(path, 12000);
++	const std::string fullPrevious = androidReadTail(path, 1 << 20);
++	const std::string previous = fullPrevious.size() > 12000 ? fullPrevious.substr(fullPrevious.size() - 12000) : fullPrevious;
 +	if (!previous.empty() && previous.find(kCleanExitMarker) == std::string::npos)
 +	{
 +		// The dialog cannot scroll or copy on every device, so it only shows the last
@@ -194,7 +249,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +		{
 +			std::ofstream out(copy, std::ios::binary | std::ios::trunc);
 +			if (out)
-+				out << previous;
++				out << fullPrevious;
 +		}
 +		const std::string message = "El log quedo copiado al portapapeles: pegalo en el chat.\n\n..." + shortTail;
 +		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: la ejecucion anterior termino mal", message.c_str(), nullptr);
@@ -239,7 +294,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  std::string loadUsername()
  {
  	const std::filesystem::path path =
-@@ -97,13 +214,16 @@
+@@ -97,13 +269,16 @@
  }
  }
  
@@ -257,7 +312,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #if PLATFORM_PC_LEGACY
  	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
  #endif
-@@ -116,7 +236,39 @@
+@@ -116,7 +291,39 @@
  	if (argc >= 3 && std::strlen(argv[2]) > 1)
  		auth = argv[2];
  
@@ -330,6 +385,27 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  	const char *path = ::getenv("HOME");
  	if (path == nullptr)
  		return new File_Impl("");
+diff -ruN orig/src/pc/lwjgl/Display.cpp new/src/pc/lwjgl/Display.cpp
+--- orig/src/pc/lwjgl/Display.cpp	2026-09-19 18:54:06.499800985 +0000
++++ new/src/pc/lwjgl/Display.cpp	2026-09-19 18:54:06.529878294 +0000
+@@ -28,6 +28,17 @@
+ // Display functions
+ void setDisplayMode(const DisplayMode &display_mode)
+ {
++#if defined(__ANDROID__)
++	// The window always covers the whole screen. SDL_SetWindowSize() would overwrite the
++	// real size Android reported with the game's default 854x480 (depending on timing),
++	// and the first frames would be laid out for the wrong size. Follow the actual window.
++	{
++		int w, h;
++		SDL_GetWindowSize(GLContext::detail::getWindow(), &w, &h);
++		current_display_mode = DisplayMode(w, h);
++		return;
++	}
++#endif
+ 	if (!display_mode.isFullscreen())
+ 	{
+ 		SDL_SetWindowSize(GLContext::detail::getWindow(), display_mode.getWidth(), display_mode.getHeight());
 diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
 --- orig/src/pc/lwjgl/GLContext.cpp	2026-09-18 18:14:00.382565324 +0000
 +++ new/src/pc/lwjgl/GLContext.cpp	2026-09-19 18:29:58.214814484 +0000
@@ -401,8 +477,133 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  
 diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenGlRenderBackend.cpp
 --- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:00.387082415 +0000
-+++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:28.448022968 +0000
-@@ -55,11 +55,19 @@
++++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-19 18:58:21.022446385 +0000
+@@ -14,6 +14,124 @@
+ #include <cstdio>
+ #include <cstring>
+ 
++#if defined(__ANDROID__)
++// Diagnostic build: report the first GL errors together with the call that raised them
++// (goes to last_run.log). Stops checking after 40 errors or 60000 calls to stay cheap.
++static int pcGlTraceReported = 0;
++static int pcGlTraceChecks = 0;
++static void pcGlTraceCheck(const char *call, int line)
++{
++	if (pcGlTraceReported >= 40 || ++pcGlTraceChecks > 60000)
++		return;
++	for (GLenum e = glad_glGetError(); e != GL_NO_ERROR && pcGlTraceReported < 40; e = glad_glGetError())
++	{
++		++pcGlTraceReported;
++		std::fprintf(stderr, "[glerr] 0x%04x after %s (PcOpenGlRenderBackend.cpp:%d)\n", e, call, line);
++	}
++}
++#define PC_GL_TRACED(function, ...) (glad_##function(__VA_ARGS__), pcGlTraceCheck(#function "(" #__VA_ARGS__ ")", __LINE__))
++#undef glEnable
++#define glEnable(...) PC_GL_TRACED(glEnable, __VA_ARGS__)
++#undef glDisable
++#define glDisable(...) PC_GL_TRACED(glDisable, __VA_ARGS__)
++#undef glEnableClientState
++#define glEnableClientState(...) PC_GL_TRACED(glEnableClientState, __VA_ARGS__)
++#undef glDisableClientState
++#define glDisableClientState(...) PC_GL_TRACED(glDisableClientState, __VA_ARGS__)
++#undef glTexParameteri
++#define glTexParameteri(...) PC_GL_TRACED(glTexParameteri, __VA_ARGS__)
++#undef glTexParameterf
++#define glTexParameterf(...) PC_GL_TRACED(glTexParameterf, __VA_ARGS__)
++#undef glHint
++#define glHint(...) PC_GL_TRACED(glHint, __VA_ARGS__)
++#undef glFogi
++#define glFogi(...) PC_GL_TRACED(glFogi, __VA_ARGS__)
++#undef glFogf
++#define glFogf(...) PC_GL_TRACED(glFogf, __VA_ARGS__)
++#undef glFogfv
++#define glFogfv(...) PC_GL_TRACED(glFogfv, __VA_ARGS__)
++#undef glLightModelfv
++#define glLightModelfv(...) PC_GL_TRACED(glLightModelfv, __VA_ARGS__)
++#undef glLightfv
++#define glLightfv(...) PC_GL_TRACED(glLightfv, __VA_ARGS__)
++#undef glColorMaterial
++#define glColorMaterial(...) PC_GL_TRACED(glColorMaterial, __VA_ARGS__)
++#undef glMatrixMode
++#define glMatrixMode(...) PC_GL_TRACED(glMatrixMode, __VA_ARGS__)
++#undef glShadeModel
++#define glShadeModel(...) PC_GL_TRACED(glShadeModel, __VA_ARGS__)
++#undef glBlendFunc
++#define glBlendFunc(...) PC_GL_TRACED(glBlendFunc, __VA_ARGS__)
++#undef glAlphaFunc
++#define glAlphaFunc(...) PC_GL_TRACED(glAlphaFunc, __VA_ARGS__)
++#undef glCullFace
++#define glCullFace(...) PC_GL_TRACED(glCullFace, __VA_ARGS__)
++#undef glDepthFunc
++#define glDepthFunc(...) PC_GL_TRACED(glDepthFunc, __VA_ARGS__)
++#undef glPolygonOffset
++#define glPolygonOffset(...) PC_GL_TRACED(glPolygonOffset, __VA_ARGS__)
++#undef glPixelStorei
++#define glPixelStorei(...) PC_GL_TRACED(glPixelStorei, __VA_ARGS__)
++#undef glTexImage2D
++#define glTexImage2D(...) PC_GL_TRACED(glTexImage2D, __VA_ARGS__)
++#undef glTexSubImage2D
++#define glTexSubImage2D(...) PC_GL_TRACED(glTexSubImage2D, __VA_ARGS__)
++#undef glCopyTexSubImage2D
++#define glCopyTexSubImage2D(...) PC_GL_TRACED(glCopyTexSubImage2D, __VA_ARGS__)
++#undef glGetIntegerv
++#define glGetIntegerv(...) PC_GL_TRACED(glGetIntegerv, __VA_ARGS__)
++#undef glGetFloatv
++#define glGetFloatv(...) PC_GL_TRACED(glGetFloatv, __VA_ARGS__)
++#undef glReadPixels
++#define glReadPixels(...) PC_GL_TRACED(glReadPixels, __VA_ARGS__)
++#undef glDrawArrays
++#define glDrawArrays(...) PC_GL_TRACED(glDrawArrays, __VA_ARGS__)
++#undef glVertexPointer
++#define glVertexPointer(...) PC_GL_TRACED(glVertexPointer, __VA_ARGS__)
++#undef glTexCoordPointer
++#define glTexCoordPointer(...) PC_GL_TRACED(glTexCoordPointer, __VA_ARGS__)
++#undef glNormalPointer
++#define glNormalPointer(...) PC_GL_TRACED(glNormalPointer, __VA_ARGS__)
++#undef glColorPointer
++#define glColorPointer(...) PC_GL_TRACED(glColorPointer, __VA_ARGS__)
++#undef glViewport
++#define glViewport(...) PC_GL_TRACED(glViewport, __VA_ARGS__)
++#undef glLineWidth
++#define glLineWidth(...) PC_GL_TRACED(glLineWidth, __VA_ARGS__)
++#undef glDepthMask
++#define glDepthMask(...) PC_GL_TRACED(glDepthMask, __VA_ARGS__)
++#undef glColorMask
++#define glColorMask(...) PC_GL_TRACED(glColorMask, __VA_ARGS__)
++#undef glClear
++#define glClear(...) PC_GL_TRACED(glClear, __VA_ARGS__)
++#undef glCallList
++#define glCallList(...) PC_GL_TRACED(glCallList, __VA_ARGS__)
++#undef glCallLists
++#define glCallLists(...) PC_GL_TRACED(glCallLists, __VA_ARGS__)
++#undef glNewList
++#define glNewList(...) PC_GL_TRACED(glNewList, __VA_ARGS__)
++#undef glEndList
++#define glEndList(...) PC_GL_TRACED(glEndList, __VA_ARGS__)
++#undef glDeleteLists
++#define glDeleteLists(...) PC_GL_TRACED(glDeleteLists, __VA_ARGS__)
++#undef glBindTexture
++#define glBindTexture(...) PC_GL_TRACED(glBindTexture, __VA_ARGS__)
++#undef glGenTextures
++#define glGenTextures(...) PC_GL_TRACED(glGenTextures, __VA_ARGS__)
++#undef glDeleteTextures
++#define glDeleteTextures(...) PC_GL_TRACED(glDeleteTextures, __VA_ARGS__)
++#undef glOrtho
++#define glOrtho(...) PC_GL_TRACED(glOrtho, __VA_ARGS__)
++#undef glFrustum
++#define glFrustum(...) PC_GL_TRACED(glFrustum, __VA_ARGS__)
++#undef glClearColor
++#define glClearColor(...) PC_GL_TRACED(glClearColor, __VA_ARGS__)
++#undef glClearDepth
++#define glClearDepth(...) PC_GL_TRACED(glClearDepth, __VA_ARGS__)
++#undef glScaled
++#define glScaled(...) PC_GL_TRACED(glScaled, __VA_ARGS__)
++#endif
++
+ 
+ #ifndef GL_NEAREST_MIPMAP_LINEAR
+ #define GL_NEAREST_MIPMAP_LINEAR 0x2702
+@@ -55,11 +173,19 @@
      return major > 1 || (major == 1 && minor >= 2);
  }
  
