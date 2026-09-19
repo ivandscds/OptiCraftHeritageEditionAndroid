@@ -102,7 +102,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-19 01:36:36.809204617 +0000
++++ new/src/pc/Main.cpp	2026-09-19 17:59:07.077092684 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -128,7 +128,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  namespace
  {
  std::string trimUsername(std::string value)
-@@ -77,6 +90,107 @@
+@@ -77,6 +90,110 @@
  	return 0;
  }
  
@@ -200,6 +200,9 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: la ejecucion anterior termino mal", message.c_str(), nullptr);
 +	}
 +
++	// gl4es: print the shader source and the real compiler error when a shader fails.
++	setenv("LIBGL_LOGSHADERERROR", "1", 1);
++
 +	g_androidLogFd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
 +	if (g_androidLogFd < 0)
 +		return;
@@ -236,7 +239,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  std::string loadUsername()
  {
  	const std::filesystem::path path =
-@@ -97,13 +211,16 @@
+@@ -97,13 +214,16 @@
  }
  }
  
@@ -254,7 +257,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #if PLATFORM_PC_LEGACY
  	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
  #endif
-@@ -116,7 +233,39 @@
+@@ -116,7 +236,39 @@
  	if (argc >= 3 && std::strlen(argv[2]) > 1)
  		auth = argv[2];
  
@@ -329,18 +332,19 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  		return new File_Impl("");
 diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
 --- orig/src/pc/lwjgl/GLContext.cpp	2026-09-18 18:14:00.382565324 +0000
-+++ new/src/pc/lwjgl/GLContext.cpp	2026-09-18 18:14:28.447853159 +0000
-@@ -13,6 +13,9 @@
++++ new/src/pc/lwjgl/GLContext.cpp	2026-09-19 17:59:07.076844817 +0000
+@@ -13,6 +13,10 @@
  #endif
  
  #include "SDL.h"
 +#if defined(__ANDROID__)
++#include <cstdio>
 +#include <gl4esinit.h>
 +#endif
  
  // #define MC_DEBUG_GL
  
-@@ -174,9 +177,16 @@
+@@ -174,9 +178,16 @@
  
  		pcRenderBackendSetActive(PcRenderBackendType::OpenGL);
  
@@ -357,7 +361,7 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  		SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
  		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
  
-@@ -224,8 +234,17 @@
+@@ -224,8 +235,32 @@
  		if (window == nullptr || gl_context == nullptr)
  			throw SDLException();
  
@@ -368,6 +372,21 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
 +		initialize_gl4es();
 +		if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(gl4es_GetProcAddress)))
 +			throw std::runtime_error("Failed to load glad");
++		{
++			// What the real driver reports, before gl4es answers for it (goes to last_run.log).
++			typedef const unsigned char *(*RawGetString)(unsigned int);
++			RawGetString rawGetString = reinterpret_cast<RawGetString>(SDL_GL_GetProcAddress("glGetString"));
++			if (rawGetString)
++			{
++				std::fprintf(stderr, "[gl] driver GL_VERSION: %s\n", reinterpret_cast<const char *>(rawGetString(0x1F02)));
++				std::fprintf(stderr, "[gl] driver GL_RENDERER: %s\n", reinterpret_cast<const char *>(rawGetString(0x1F01)));
++				std::fprintf(stderr, "[gl] driver GLSL: %s\n", reinterpret_cast<const char *>(rawGetString(0x8B8C)));
++			}
++			else
++			{
++				std::fprintf(stderr, "[gl] SDL_GL_GetProcAddress(glGetString) returned null\n");
++			}
++		}
 +#else
  		if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(SDL_GL_GetProcAddress)))
  			throw std::runtime_error("Failed to load glad");
