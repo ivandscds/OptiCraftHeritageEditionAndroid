@@ -27,11 +27,16 @@ jobs:
             rm -rf external/gl4es
             git clone --depth 1 https://github.com/ptitSeb/gl4es external/gl4es
           fi
+          # gl4es bug: the FPE error paths pass gl4es' own shader/program ids to the raw
+          # GLES info-log calls, so the log printed is uninitialised garbage. Use its wrappers.
+          sed -i 's/gles_glGetShaderInfoLog(/gl4es_glGetShaderInfoLog(/g; s/gles_glGetProgramInfoLog(/gl4es_glGetProgramInfoLog(/g' external/gl4es/src/gl/fpe.c
 
       - name: Apply Android patch
         shell: bash
         run: |
           cp android.cmake cmake/android.cmake
+          # send gl4es messages to stdout (-> last_run.log) instead of logcat
+          sed -i 's/USE_ANDROID_LOG ON/USE_ANDROID_LOG OFF/' cmake/android.cmake
           if grep -q 'cmake/android.cmake' CMakeLists.txt; then
             echo "Patch already applied"
           else
