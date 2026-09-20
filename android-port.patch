@@ -1466,3 +1466,172 @@ diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
      char* base = SDL_GetBasePath();
      if (base)
      {
+diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/SoundManager_PC.cpp
+--- orig/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.289487939 +0000
++++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.369742281 +0000
+@@ -39,6 +39,10 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <cstdlib>
++#if defined(__ANDROID__)
++#include <atomic>
++#include <cstdio>
++#endif
+ 
+ #include "SDL.h"
+ 
+@@ -87,6 +91,16 @@
+ static int               s_streamingChannel = -1;
+ static AudioListenerState s_listener;
+ 
++#if defined(__ANDROID__)
++// Diagnostics for silent audio on Android (goes to last_run.log).
++static int s_dbgSoundsRegistered = 0;
++static int s_dbgStreamingRegistered = 0;
++static int s_dbgMusicRegistered = 0;
++static int s_dbgPlays = 0;
++static std::atomic<int> s_dbgCallbacks{0};
++static std::atomic<bool> s_dbgNonSilentLogged{false};
++#endif
++
+ // Decode an OGG file to float PCM (mono → stereo interleaved, 44100 Hz)
+ static std::vector<float> decodeOgg(const std::string &path, float pitch)
+ {
+@@ -94,7 +108,12 @@
+     short *pcmShort = nullptr;
+     int samples = platformDecodeVorbis(path, &channels, &sampleRate, &pcmShort);
+     if (samples <= 0 || pcmShort == nullptr)
++    {
++#if defined(__ANDROID__)
++        std::fprintf(stderr, "[audio] decode failed: %s\n", path.c_str());
++#endif
+         return {};
++    }
+ 
+     // Resample + convert to float stereo
+     std::vector<float> out;
+@@ -193,6 +212,10 @@
+ {
+     float *out   = reinterpret_cast<float *>(stream);
+     int   frames = len / (int)(sizeof(float) * CHANNELS);
++#if defined(__ANDROID__)
++    if (s_dbgCallbacks.fetch_add(1) == 0)
++        std::fprintf(stderr, "[audio] callback running, buffer=%d bytes\n", len);
++#endif
+ 
+     std::memset(stream, 0, len);
+ 
+@@ -227,6 +250,21 @@
+ 
+     PcMusicStream::mix(out, frames, musicVolume);
+ 
++#if defined(__ANDROID__)
++    if (!s_dbgNonSilentLogged.load())
++    {
++        for (int i = 0; i < frames * CHANNELS; i++)
++        {
++            if (out[i] > 0.0001f || out[i] < -0.0001f)
++            {
++                s_dbgNonSilentLogged.store(true);
++                std::fprintf(stderr, "[audio] first non-silent buffer mixed\n");
++                break;
++            }
++        }
++    }
++#endif
++
+     // Soft clip to [-1, 1]
+     for (int i = 0; i < frames * CHANNELS; i++)
+     {
+@@ -287,6 +325,25 @@
+     }
+     SDL_PauseAudioDevice(s_device, 0); // start playback
+     loaded = true;
++#if defined(__ANDROID__)
++    {
++        const char *driver = SDL_GetCurrentAudioDriver();
++        std::fprintf(stderr, "[audio] device open: driver=%s freq=%d channels=%d format=0x%x samples=%d\n",
++                     driver ? driver : "?", have.freq, (int)have.channels, (unsigned)have.format, (int)have.samples);
++        // Short test tone: if it is heard, the output path works and the problem is in the game sounds.
++        std::vector<float> tone;
++        const int toneFrames = SAMPLE_RATE / 5;
++        tone.reserve((size_t)toneFrames * 2);
++        for (int i = 0; i < toneFrames; i++)
++        {
++            const float envelope = 1.0f - (float)i / (float)toneFrames;
++            const float v = 0.5f * envelope * std::sin(2.0f * 3.14159265f * 660.0f * (float)i / (float)SAMPLE_RATE);
++            tone.push_back(v);
++            tone.push_back(v);
++        }
++        playPCM(std::move(tone), 0.8f, false, AudioBus::Sound);
++    }
++#endif
+ }
+ 
+ void SoundManager::onSoundOptionsChanged()
+@@ -342,19 +399,35 @@
+ void SoundManager::addSound(const jstring &s, const std::string &file)
+ {
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
++    {
+         soundPoolSounds.addSound(s, file);
++#if defined(__ANDROID__)
++        if (++s_dbgSoundsRegistered <= 3)
++            std::fprintf(stderr, "[audio] addSound %s -> %s\n", s.c_str(), file.c_str());
++#endif
++    }
+ }
+ 
+ void SoundManager::addStreaming(const jstring &s, const std::string &file)
+ {
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
++    {
+         soundPoolStreaming.addSound(s, file);
++#if defined(__ANDROID__)
++        ++s_dbgStreamingRegistered;
++#endif
++    }
+ }
+ 
+ void SoundManager::addMusic(const jstring &s, const std::string &file)
+ {
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
++    {
+         soundPoolMusic.addSound(s, file);
++#if defined(__ANDROID__)
++        ++s_dbgMusicRegistered;
++#endif
++    }
+ }
+ 
+ bool SoundManager::playMusicFileNow(const std::string &file)
+@@ -478,6 +551,14 @@
+     if (!loaded || !options || options->soundVolume == 0.0f) return;
+ 
+     SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
++#if defined(__ANDROID__)
++    if (s_dbgPlays < 20)
++    {
++        ++s_dbgPlays;
++        std::fprintf(stderr, "[audio] playSound %s: entry=%s (registered: sounds=%d streaming=%d music=%d)\n", s.c_str(),
++                     entry ? entry->soundUrl.c_str() : "NONE", s_dbgSoundsRegistered, s_dbgStreamingRegistered, s_dbgMusicRegistered);
++    }
++#endif
+     if (entry != nullptr && f3 > 0.0f)
+     {
+         const float attenuation = audioSpatialAttenuation(s_listener, f, f1, f2, f3);
+@@ -495,6 +576,14 @@
+     if (!loaded || !options || options->soundVolume == 0.0f) return;
+ 
+     SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
++#if defined(__ANDROID__)
++    if (s_dbgPlays < 20)
++    {
++        ++s_dbgPlays;
++        std::fprintf(stderr, "[audio] playSoundFX %s: entry=%s (registered: sounds=%d streaming=%d music=%d)\n", s.c_str(),
++                     entry ? entry->soundUrl.c_str() : "NONE", s_dbgSoundsRegistered, s_dbgStreamingRegistered, s_dbgMusicRegistered);
++    }
++#endif
+     if (entry != nullptr)
+     {
+         float vol = (f > 1.0f ? 1.0f : f) * 0.25f;
