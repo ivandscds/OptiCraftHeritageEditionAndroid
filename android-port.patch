@@ -76,6 +76,86 @@ diff -ruN orig/src/net/minecraft/src/TexturePackList.cpp new/src/net/minecraft/s
  
  			try
  			{
+diff -ruN orig/src/net/minecraft/src/ThreadDownloadResources.cpp new/src/net/minecraft/src/ThreadDownloadResources.cpp
+--- orig/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-09-20 19:18:08.411902439 +0000
++++ new/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-09-20 19:18:08.412250564 +0000
+@@ -1,4 +1,10 @@
+ #include "ThreadDownloadResources.h"
++
++#if defined(__ANDROID__)
++#include <cstdio>
++static int s_dbgInstalled = 0;
++static int s_dbgFailed = 0;
++#endif
+ #include "platform/Log.h"
+ 
+ #include "Minecraft.h"
+@@ -101,6 +107,9 @@
+ 	catch (std::exception &exception)
+ 	{
+ 		loadResource(resourcesFolder, "");
++#if defined(__ANDROID__)
++		std::fprintf(stderr, "[res] fallback finished: folder=%s pakMounted=%d installed=%d failed=%d\n", resourcesFolder.c_str(), AssetPak::mounted() ? 1 : 0, s_dbgInstalled, s_dbgFailed);
++#endif
+ 		MC_LOG_ERROR("game", "%s\n", exception.what());
+ 	}
+ #endif
+@@ -120,7 +129,12 @@
+ {
+ 	std::vector<std::string> names;
+ 	if (!AssetPak::listChildren(directoryKey, names))
++	{
++#if defined(__ANDROID__)
++		std::fprintf(stderr, "[res] pak has no entries under %s/\n", directoryKey.c_str());
++#endif
+ 		return false;
++	}
+ 
+ 	std::sort(names.begin(), names.end());
+ 	for (const std::string &name : names)
+@@ -138,6 +152,9 @@
+ 		try
+ 		{
+ 			mc->installResource(s + name, AssetPak::makePath(key));
++#if defined(__ANDROID__)
++			++s_dbgInstalled;
++#endif
+ #if PLATFORM_LOCAL_RESOURCES_ONLY
+ 			++s_localResourceCount;
+ #endif
+@@ -145,6 +162,9 @@
+ 		catch (...)
+ 		{
+ 			MC_LOG_WARN("resources", "Failed to add %s%s\n", s.c_str(), name.c_str());
++#if defined(__ANDROID__)
++			++s_dbgFailed;
++#endif
+ 		}
+ 	}
+ 	return true;
+@@ -157,7 +177,12 @@
+ 
+ 	std::vector<std::string> entries;
+ 	if (!PlatformStorage::listPathEntries(file, entries))
++	{
++#if defined(__ANDROID__)
++		std::fprintf(stderr, "[res] cannot list folder %s\n", file.c_str());
++#endif
+ 		return;
++	}
+ 
+ 	for (const std::string& name : entries)
+ 	{
+@@ -174,6 +199,9 @@
+ 		try
+ 		{
+ 			mc->installResource(s + name, path);
++#if defined(__ANDROID__)
++			++s_dbgInstalled;
++#endif
+ #if PLATFORM_LOCAL_RESOURCES_ONLY
+ 			++s_localResourceCount;
+ #endif
 diff -ruN orig/src/net/minecraft/src/World.cpp new/src/net/minecraft/src/World.cpp
 --- orig/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.620793427 +0000
 +++ new/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.854790285 +0000
@@ -122,7 +202,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-20 03:56:15.853349010 +0000
++++ new/src/pc/Main.cpp	2026-09-20 19:18:08.286549453 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -153,7 +233,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  namespace
  {
  std::string trimUsername(std::string value)
-@@ -77,6 +95,166 @@
+@@ -77,6 +95,210 @@
  	return 0;
  }
  
@@ -163,6 +243,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +// end with the clean-exit marker, its tail is shown in a dialog on the next start.
 +int g_androidLogFd = -1;
 +const char kCleanExitMarker[] = "--- clean exit ---";
++const char kBackgroundMarker[] = "--- background ---";
 +
 +struct AndroidBacktrace
 +{
@@ -245,22 +326,68 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	std::fprintf(stderr, "[SDL] %s\n", message);
 +}
 +
++// The app is usually closed by swiping it away, which kills the process without any
++// warning. Going to the background (or being destroyed) is written to the log as a marker,
++// so that a normal close is not reported as a crash the next time. Runs from an SDL event
++// watch because the game thread is paused while the app is in the background.
++int SDLCALL androidLifecycleWatch(void *, SDL_Event *event)
++{
++	if (g_androidLogFd >= 0 && (event->type == SDL_APP_WILLENTERBACKGROUND || event->type == SDL_APP_TERMINATING))
++	{
++		const char text[] = "\n--- background ---\n";
++		const ssize_t ignored = write(g_androidLogFd, text, sizeof(text) - 1);
++		(void)ignored;
++	}
++	return 1;
++}
++
++bool androidRunEndedBadly(const std::string &log)
++{
++	if (log.empty())
++		return false;
++	const size_t npos = std::string::npos;
++	const size_t clean = log.rfind(kCleanExitMarker);
++	const size_t background = log.rfind(kBackgroundMarker);
++	size_t marker = clean;
++	if (background != npos && (marker == npos || background > marker))
++		marker = background;
++	if (marker == npos)
++		return true; // never reached a marker: crash, hang, or killed while playing
++	const size_t crash = log.rfind("*** CRASH");
++	const size_t fatal = log.rfind("[fatal]");
++	const size_t lastBad = (crash != npos && (fatal == npos || crash > fatal)) ? crash : fatal;
++	return lastBad != npos && lastBad > marker;
++}
++
 +void androidStartDiagnostics()
 +{
 +	// Landscape only (both directions). Without this the resizable window lets SDL pick
 +	// "all orientations", which overrides the manifest.
 +	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
-+	const char *dir = SDL_AndroidGetInternalStoragePath();
-+	if (!dir)
++	const char *internalDir = SDL_AndroidGetInternalStoragePath();
++	if (!internalDir)
 +		return;
-+	const std::string path = std::string(dir) + "/last_run.log";
++
++	// Prefer /sdcard/OptiCraft so the log can be read from a file manager right after a run;
++	// use the app's own storage when "all files access" was not granted.
++	std::string logDir = internalDir;
++	if (access("/sdcard/OptiCraft", W_OK) == 0)
++		logDir = "/sdcard/OptiCraft";
++	const std::string path = logDir + "/last_run.log";
++	const std::string previousPath = logDir + "/previous_run.log";
 +
 +	const std::string fullPrevious = androidReadTail(path, 1 << 20);
-+	const std::string previous = fullPrevious.size() > 12000 ? fullPrevious.substr(fullPrevious.size() - 12000) : fullPrevious;
-+	if (!previous.empty() && previous.find(kCleanExitMarker) == std::string::npos)
++	if (!fullPrevious.empty())
 +	{
-+		// The dialog cannot scroll or copy on every device, so it only shows the last
-+		// few lines; the longer tail goes to the clipboard and to last_crash.log.
++		// Keep the last run for reading and make sure it is reported only once, even if the
++		// app is killed while the dialog is still on screen.
++		std::rename(path.c_str(), previousPath.c_str());
++	}
++	if (androidRunEndedBadly(fullPrevious))
++	{
++		const std::string previous = fullPrevious.size() > 12000 ? fullPrevious.substr(fullPrevious.size() - 12000) : fullPrevious;
++		// The dialog cannot scroll or copy on every device, so it only shows the last few
++		// lines; the longer tail goes to the clipboard.
 +		std::string shortTail = previous.size() > 700 ? previous.substr(previous.size() - 700) : previous;
 +		const size_t firstNewline = shortTail.find('\n');
 +		if (previous.size() > 700 && firstNewline != std::string::npos)
@@ -268,14 +395,9 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +
 +		SDL_Init(SDL_INIT_VIDEO); // the clipboard needs the video subsystem
 +		SDL_SetClipboardText(previous.c_str());
-+		for (const std::string &copy : { std::string(dir) + "/last_crash.log", std::string("/sdcard/OptiCraft/last_crash.log") })
-+		{
-+			std::ofstream out(copy, std::ios::binary | std::ios::trunc);
-+			if (out)
-+				out << fullPrevious;
-+		}
-+		const std::string message = "El log quedo copiado al portapapeles: pegalo en el chat.\n\n..." + shortTail;
-+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: la ejecucion anterior termino mal", message.c_str(), nullptr);
++		const std::string message = "La ejecucion anterior no termino limpio. El log quedo copiado al portapapeles y guardado en " +
++		                            previousPath + "\n\n..." + shortTail;
++		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft", message.c_str(), nullptr);
 +	}
 +
 +	// gl4es: print the shader source and the real compiler error when a shader fails.
@@ -313,14 +435,16 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +}
 +
 +#define BOOT_LOG(text) std::fprintf(stderr, "[boot] %s\n", text)
++#define BOOT_AFTER_SDL_INIT() SDL_AddEventWatch(androidLifecycleWatch, nullptr)
 +#else
 +#define BOOT_LOG(text) ((void)0)
++#define BOOT_AFTER_SDL_INIT() ((void)0)
 +#endif
 +
  std::string loadUsername()
  {
  	const std::filesystem::path path =
-@@ -97,13 +275,16 @@
+@@ -97,13 +319,17 @@
  }
  }
  
@@ -331,6 +455,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER | SDL_INIT_AUDIO) < 0)
  		throw SDLException();
 +	BOOT_LOG("SDL ready");
++	BOOT_AFTER_SDL_INIT();
  	pcRenderBackendSetRequested(loadRenderBackendPreference());
  	lwjgl::GLContext::setRequestedSamples(loadOptiFineAaLevel());
  	lwjgl::GLContext::instantiate();
@@ -338,7 +463,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #if PLATFORM_PC_LEGACY
  	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
  #endif
-@@ -116,7 +297,39 @@
+@@ -116,7 +342,39 @@
  	if (argc >= 3 && std::strlen(argv[2]) > 1)
  		auth = argv[2];
  
