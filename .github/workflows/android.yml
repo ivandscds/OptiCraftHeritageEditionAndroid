@@ -213,12 +213,15 @@ jobs:
           assert launcher.search(s), 'launcher intent-filter not found'
           s = launcher.sub('', s, count=1)
           act = ('<activity android:name="org.opticraft.heritage.LauncherActivity"'
-                 ' android:label="@string/app_name" android:exported="true">'
+                 ' android:label="@string/app_name" android:screenOrientation="sensorLandscape" android:exported="true">'
                  '<intent-filter><action android:name="android.intent.action.MAIN" />'
                  '<category android:name="android.intent.category.LAUNCHER" /></intent-filter>'
                  '</activity>\n    ')
           assert '</application>' in s
           s = s.replace('</application>', act + '</application>', 1)
+          # Landscape for the game activity too (the launcher screen above already has it).
+          assert '<activity android:name="SDLActivity"' in s
+          s = s.replace('<activity android:name="SDLActivity"', '<activity android:name="SDLActivity" android:screenOrientation="sensorLandscape"', 1)
           open(p, 'w').write(s)
           PY
           grep -n 'LauncherActivity' "$MANIFEST"
