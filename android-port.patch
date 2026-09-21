@@ -47,6 +47,19 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  
  # Unified diagnostic verbosity, the same knob cmake/ps2.cmake and cmake/wii.cmake
  # expose. The desktop target left it undefined, so platform/Log.h fell back to 0
+diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
+--- orig/src/client/Minecraft.cpp	2026-09-21 06:33:08.413503767 +0000
++++ new/src/client/Minecraft.cpp	2026-09-21 06:33:45.764752434 +0000
+@@ -1241,6 +1241,9 @@
+         return;
+     if (currentScreen != nullptr)
+         currentScreen->onGuiClosed();
++#if defined(__ANDROID__)
++    lwjgl::Keyboard::setTextInputActive(false); // a new screen shows it again if it has a focused text field
++#endif
+ #if PLATFORM_SYNC_STATS_ON_GUI_CHANGE
+     if (dynamic_cast<GuiMainMenu *>(guiscreen) != nullptr)
+         statFileWriter->prepareStatsForSync();
 diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
 --- orig/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.901063291 +0000
 +++ new/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.933083356 +0000
@@ -64,6 +77,36 @@ diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
  #ifdef __LITTLE_ENDIAN
  #define __HI(x) *(1+(int*)&x)
  #define __LO(x) *(int*)&x
+diff -ruN orig/src/net/minecraft/src/GuiTextField.cpp new/src/net/minecraft/src/GuiTextField.cpp
+--- orig/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:08.406600495 +0000
++++ new/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:45.764140303 +0000
+@@ -387,6 +387,10 @@
+ {
+     if (focused && !isFocused)
+         cursorCounter = 0;
++#if defined(__ANDROID__)
++    if (focused != isFocused)
++        lwjgl::Keyboard::setTextInputActive(focused); // the on-screen keyboard follows the focused field
++#endif
+     isFocused = focused;
+     if (parentGuiScreen != nullptr)
+         parentGuiScreen->notifyTextFieldFocus(this, focused);
+diff -ruN orig/src/net/minecraft/src/Tessellator.cpp new/src/net/minecraft/src/Tessellator.cpp
+--- orig/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.269500767 +0000
++++ new/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.300961973 +0000
+@@ -687,6 +687,12 @@
+ 			{
+ 				rawBuffer[rawBufferIndex + 5] = rawBuffer[(rawBufferIndex - j) + 5];
+ 			}
++			if (hasNormals)
++			{
++				// The two extra vertices of a quad split into triangles need the normal too; without
++				// it they were (0,0,0) and lit surfaces got a diagonal split with a gradient.
++				rawBuffer[rawBufferIndex + 6] = rawBuffer[(rawBufferIndex - j) + 6];
++			}
+ 			if (hasBrightness)
+ 			{
+ 				rawBuffer[rawBufferIndex + 7] = rawBuffer[(rawBufferIndex - j) + 7];
 diff -ruN orig/src/net/minecraft/src/TexturePackList.cpp new/src/net/minecraft/src/TexturePackList.cpp
 --- orig/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.615847143 +0000
 +++ new/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.853650787 +0000
@@ -652,8 +695,19 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  
 diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
 --- orig/src/pc/lwjgl/Keyboard.cpp	2026-09-20 03:54:15.218832574 +0000
-+++ new/src/pc/lwjgl/Keyboard.cpp	2026-09-20 03:54:40.563725068 +0000
-@@ -294,6 +294,11 @@
++++ new/src/pc/lwjgl/Keyboard.cpp	2026-09-21 06:33:45.763918213 +0000
+@@ -7,6 +7,10 @@
+ #include "external/SDLException.h"
+ 
+ #include "SDL_events.h"
++#if defined(__ANDROID__)
++#include <cstdio>
++#include "SDL_keyboard.h"
++#endif
+ 
+ namespace lwjgl
+ {
+@@ -294,6 +298,11 @@
  	}
  }
  
@@ -665,7 +719,28 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  namespace detail
  {
  
-@@ -357,6 +362,16 @@
+@@ -343,6 +352,20 @@
+ 
+ void pushEvent(const SDL_Event &e)
+ {
++#if defined(__ANDROID__)
++	{
++		static int dbgInputEvents = 0;
++		if (dbgInputEvents < 60)
++		{
++			++dbgInputEvents;
++			if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
++				std::fprintf(stderr, "[input] key %s sym=%d scancode=%d repeat=%d\n", e.key.state == SDL_PRESSED ? "down" : "up",
++				             (int)e.key.keysym.sym, (int)e.key.keysym.scancode, (int)e.key.repeat);
++			else
++				std::fprintf(stderr, "[input] text '%s'\n", e.text.text);
++		}
++	}
++#endif
+ 	if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
+ 	{
+ 		handleKey(keySDLToLWJGL(e.key.keysym.sym), e.key.repeat, e.key.state == SDL_PRESSED);
+@@ -357,6 +380,16 @@
  	}
  }
  
@@ -682,7 +757,25 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  }
  
  // Keyboard functions
-@@ -427,6 +442,10 @@
+@@ -401,6 +434,17 @@
+ 	allow_repeat_events = repeat;
+ }
+ 
++#if defined(__ANDROID__)
++void setTextInputActive(bool active)
++{
++	std::fprintf(stderr, "[input] text input %s\n", active ? "start" : "stop");
++	if (active)
++		SDL_StartTextInput();
++	else
++		SDL_StopTextInput();
++}
++#endif
++
+ bool areRepeatEventsEnabled()
+ {
+ 	return allow_repeat_events;
+@@ -427,6 +471,10 @@
  
  bool isKeyDown(int_t key)
  {
@@ -695,7 +788,7 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  		keyboard_state = SDL_GetKeyboardState(&keyboard_state_size);
 diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
 --- orig/src/pc/lwjgl/Keyboard.h	2026-09-20 03:54:15.213390515 +0000
-+++ new/src/pc/lwjgl/Keyboard.h	2026-09-20 03:54:40.563143029 +0000
++++ new/src/pc/lwjgl/Keyboard.h	2026-09-21 06:33:08.430245280 +0000
 @@ -27,6 +27,11 @@
  void pushEvent(const SDL_Event &e);
  #endif
@@ -708,6 +801,18 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
  }
  
  // Key enum
+@@ -186,6 +191,11 @@
+ // Event handling
+ bool next();
+ void enableRepeatEvents(bool repeat);
++
++#if defined(__ANDROID__)
++// Shows (true) or hides (false) the on-screen keyboard and switches SDL text input on/off.
++void setTextInputActive(bool active);
++#endif
+ bool areRepeatEventsEnabled();
+ 
+ char_t getEventCharacter();
 diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
 --- orig/src/pc/lwjgl/Mouse.cpp	2026-09-20 03:54:15.207995706 +0000
 +++ new/src/pc/lwjgl/Mouse.cpp	2026-09-20 03:54:40.562983846 +0000
@@ -808,8 +913,8 @@ diff -ruN orig/src/pc/lwjgl/Mouse.h new/src/pc/lwjgl/Mouse.h
  void setCursorPosition(int_t x, int_t y);
 diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 --- orig/src/pc/lwjgl/TouchControls.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ new/src/pc/lwjgl/TouchControls.cpp	2026-09-20 03:58:23.596453467 +0000
-@@ -0,0 +1,521 @@
++++ new/src/pc/lwjgl/TouchControls.cpp	2026-09-21 06:33:45.765027907 +0000
+@@ -0,0 +1,538 @@
 +#if defined(__ANDROID__)
 +
 +#include "lwjgl/TouchControls.h"
@@ -845,10 +950,12 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	ActPrev,
 +	ActNext,
 +	ActDebug,
++	ActKeyboard,
++	ActChat,
 +	ActCount
 +};
 +
-+const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3" };
++const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3", "KB", "CHAT" };
 +
 +// Camera speed for dragging: pixels of finger travel -> mouse counts.
 +const float kLookScale = 0.9f;
@@ -882,6 +989,8 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	set(ActPrev, W * 0.5f - 4.6f * u, H - 0.9f * u, 0.6f * u);
 +	set(ActNext, W * 0.5f + 4.6f * u, H - 0.9f * u, 0.6f * u);
 +	set(ActDebug, 2.6f * u, 0.9f * u, 0.7f * u);
++	set(ActKeyboard, 4.3f * u, 0.9f * u, 0.7f * u);
++	set(ActChat, 6.0f * u, 0.9f * u, 0.7f * u);
 +	L.joyX = 3.2f * u;
 +	L.joyY = H - 3.2f * u;
 +	L.joyR = 2.6f * u;
@@ -931,6 +1040,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +		case ActInventory: Keyboard::detail::pushVirtualKey(Keyboard::KEY_E, down); break;
 +		case ActPause:     Keyboard::detail::pushVirtualKey(Keyboard::KEY_ESCAPE, down); break;
 +		case ActDebug:     Keyboard::detail::pushVirtualKey(Keyboard::KEY_F3, down); break;
++		case ActChat:      Keyboard::detail::pushVirtualKey(Keyboard::KEY_T, down); break;
 +		default: break;
 +	}
 +	g_held[a] = down;
@@ -943,6 +1053,11 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +		// Toggle: tap once to sneak, tap again to stop.
 +		g_held[a] = !g_held[a];
 +		Keyboard::detail::pushVirtualKey(Keyboard::KEY_LSHIFT, g_held[a]);
++	}
++	else if (a == ActKeyboard)
++	{
++		Keyboard::setTextInputActive(true);
++		g_held[a] = true;
 +	}
 +	else if (a == ActPrev)
 +	{
@@ -964,7 +1079,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +{
 +	if (a == ActSneak)
 +		return;
-+	if (a == ActPrev || a == ActNext)
++	if (a == ActPrev || a == ActNext || a == ActKeyboard)
 +		g_held[a] = false;
 +	else
 +		setActionState(a, false);
@@ -1052,10 +1167,15 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +		if (!playing)
 +		{
 +			// A menu is open: touches act as the mouse; only the ESC button is ours.
-+			if (hitButton(L, ActPause, px, py))
++			const int menuButtons[2] = { ActPause, ActKeyboard };
++			for (int a : menuButtons)
 +			{
-+				g_fingers[id] = { Finger::Button, ActPause };
-+				pressButton(ActPause);
++				if (hitButton(L, a, px, py))
++				{
++					g_fingers[id] = { Finger::Button, a };
++					pressButton(a);
++					break;
++				}
 +			}
 +			return;
 +		}
@@ -1133,6 +1253,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +
 +const Glyph kGlyphs[] = {
 +	{ 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } },
++	{ 'B', { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E } },
 +	{ 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } },
 +	{ 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } },
 +	{ 'F', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 } },
@@ -1318,6 +1439,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	else
 +	{
 +		drawButton(L, ActPause);
++		drawButton(L, ActKeyboard);
 +	}
 +
 +	glMatrixMode(GL_PROJECTION);
