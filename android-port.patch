@@ -913,8 +913,8 @@ diff -ruN orig/src/pc/lwjgl/Mouse.h new/src/pc/lwjgl/Mouse.h
  void setCursorPosition(int_t x, int_t y);
 diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 --- orig/src/pc/lwjgl/TouchControls.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ new/src/pc/lwjgl/TouchControls.cpp	2026-09-21 06:33:45.765027907 +0000
-@@ -0,0 +1,538 @@
++++ new/src/pc/lwjgl/TouchControls.cpp	2026-09-21 06:52:02.930988871 +0000
+@@ -0,0 +1,535 @@
 +#if defined(__ANDROID__)
 +
 +#include "lwjgl/TouchControls.h"
@@ -951,11 +951,10 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	ActNext,
 +	ActDebug,
 +	ActKeyboard,
-+	ActChat,
 +	ActCount
 +};
 +
-+const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3", "KB", "CHAT" };
++const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3", "KB" };
 +
 +// Camera speed for dragging: pixels of finger travel -> mouse counts.
 +const float kLookScale = 0.9f;
@@ -990,7 +989,6 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	set(ActNext, W * 0.5f + 4.6f * u, H - 0.9f * u, 0.6f * u);
 +	set(ActDebug, 2.6f * u, 0.9f * u, 0.7f * u);
 +	set(ActKeyboard, 4.3f * u, 0.9f * u, 0.7f * u);
-+	set(ActChat, 6.0f * u, 0.9f * u, 0.7f * u);
 +	L.joyX = 3.2f * u;
 +	L.joyY = H - 3.2f * u;
 +	L.joyR = 2.6f * u;
@@ -1040,7 +1038,6 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +		case ActInventory: Keyboard::detail::pushVirtualKey(Keyboard::KEY_E, down); break;
 +		case ActPause:     Keyboard::detail::pushVirtualKey(Keyboard::KEY_ESCAPE, down); break;
 +		case ActDebug:     Keyboard::detail::pushVirtualKey(Keyboard::KEY_F3, down); break;
-+		case ActChat:      Keyboard::detail::pushVirtualKey(Keyboard::KEY_T, down); break;
 +		default: break;
 +	}
 +	g_held[a] = down;
