@@ -5,7 +5,7 @@ WIP, has some bugs
 download latest apk from actions and download assets.pak from https://www.mediafire.com/file/ehoo6hwxejmy68p/assets.pak/file
 create folder in /sdcard/ called "OptiJuegos" and put assets.pak there
 
-apk only works rn on arm64 and android >7
+apk only works on arm64 and android >7, gonna try building it for arm32 and android 6 later
 
 OptiCraft Heritage is a heavily modified, clean-room C++ implementation of classic Minecraft-era gameplay designed around portability, low-end hardware, and console-specific optimization.
 
