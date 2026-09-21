@@ -215,7 +215,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-20 19:58:45.743689030 +0000
++++ new/src/pc/Main.cpp	2026-09-21 00:27:30.185288998 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -246,7 +246,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  namespace
  {
  std::string trimUsername(std::string value)
-@@ -77,6 +95,156 @@
+@@ -77,6 +95,188 @@
  	return 0;
  }
  
@@ -338,6 +338,37 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	std::fprintf(stderr, "[SDL] %s\n", message);
 +}
 +
++// Lets gl4es options be tried without rebuilding: /sdcard/OptiCraft/gl4es.env (plain text,
++// one NAME=VALUE per line, only LIBGL_* names, '#' starts a comment).
++void androidApplyGlEnvFile()
++{
++	const char *candidates[] = { "/sdcard/OptiCraft/gl4es.env", "/storage/emulated/0/OptiCraft/gl4es.env" };
++	for (const char *file : candidates)
++	{
++		std::ifstream in(file);
++		if (!in)
++			continue;
++		std::string line;
++		while (std::getline(in, line))
++		{
++			while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
++				line.pop_back();
++			if (line.empty() || line[0] == '#')
++				continue;
++			const size_t eq = line.find('=');
++			if (eq == std::string::npos)
++				continue;
++			const std::string name = line.substr(0, eq);
++			const std::string value = line.substr(eq + 1);
++			if (name.compare(0, 6, "LIBGL_") != 0)
++				continue;
++			setenv(name.c_str(), value.c_str(), 1);
++			std::fprintf(stderr, "[gl4es.env] %s=%s\n", name.c_str(), value.c_str());
++		}
++		return;
++	}
++}
++
 +void androidStartDiagnostics()
 +{
 +	// Landscape only (both directions). Without this the resizable window lets SDL pick
@@ -378,6 +409,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL })
 +		std::signal(sig, androidSignalHandler);
 +	std::fprintf(stderr, "[boot] log started\n");
++	androidApplyGlEnvFile();
 +}
 +
 +bool androidHasGameData()
@@ -403,7 +435,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  std::string loadUsername()
  {
  	const std::filesystem::path path =
-@@ -97,13 +265,16 @@
+@@ -97,13 +297,16 @@
  }
  }
  
@@ -421,7 +453,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #if PLATFORM_PC_LEGACY
  	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
  #endif
-@@ -116,7 +287,39 @@
+@@ -116,7 +319,39 @@
  	if (argc >= 3 && std::strlen(argv[2]) > 1)
  		auth = argv[2];
  
@@ -1334,7 +1366,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.h new/src/pc/lwjgl/TouchControls.h
 +#endif
 diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenGlRenderBackend.cpp
 --- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:00.387082415 +0000
-+++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-19 22:58:56.228614111 +0000
++++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-21 00:34:00.657790642 +0000
 @@ -14,6 +14,134 @@
  #include <cstdio>
  #include <cstring>
@@ -1515,6 +1547,82 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
      if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") != SDL_TRUE)
          return 1;
      GLfloat maximum = 1.0f;
+@@ -431,6 +572,16 @@
+         case RenderLightParameter::Position: glParameter = GL_POSITION; break;
+     }
+     glLightfv(GL_LIGHT0 + lightIndex, glParameter, values);
++#if defined(__ANDROID__)
++    {
++        static int dbgLights = 0;
++        if (dbgLights < 16)
++        {
++            ++dbgLights;
++            std::fprintf(stderr, "[light] light%d param=0x%x values=(%.3f, %.3f, %.3f, %.3f)\n", lightIndex, glParameter, values[0], values[1], values[2], values[3]);
++        }
++    }
++#endif
+ }
+ 
+ void renderLightModelAmbient(const float* values)
+@@ -681,6 +832,58 @@
+     if (mesh.data == nullptr || mesh.stride <= 0 || mesh.count <= 0)
+         return false;
+ 
++#if defined(__ANDROID__)
++    // Diagnostics for the odd shading of lit objects (inventory blocks, hand): dump what is
++    // being sent for the first draws that carry normals, plus the GL state around them.
++    {
++        static int dbgDraws = 0;
++        if (mesh.hasNormals && dbgDraws < 10)
++        {
++            ++dbgDraws;
++            const unsigned char *base = reinterpret_cast<const unsigned char *>(mesh.data);
++            std::fprintf(stderr, "[normals] draw #%d prim=%d first=%d count=%d stride=%d color=%d tex=%d bright=%d posShort=%d\n", dbgDraws,
++                         static_cast<int>(mesh.primitive), mesh.first, mesh.count, mesh.stride, mesh.hasColor, mesh.hasTexture,
++                         mesh.hasBrightness, mesh.positionShort);
++            const int shown = mesh.count < 8 ? mesh.count : 8;
++            for (int i = 0; i < shown; i++)
++            {
++                const unsigned char *v = base + static_cast<size_t>(mesh.first + i) * static_cast<size_t>(mesh.stride);
++                const signed char *n = reinterpret_cast<const signed char *>(v + mesh.normalOffset);
++                std::fprintf(stderr, "[normals]   v%d normal=(%d,%d,%d)", i, n[0], n[1], n[2]);
++                if (mesh.hasColor)
++                {
++                    const unsigned char *c = v + mesh.colorOffset;
++                    std::fprintf(stderr, " color=%02x%02x%02x%02x", c[0], c[1], c[2], c[3]);
++                }
++                if (!mesh.positionShort)
++                {
++                    const float *p = reinterpret_cast<const float *>(v);
++                    std::fprintf(stderr, " pos=(%.2f,%.2f,%.2f)", p[0], p[1], p[2]);
++                }
++                std::fprintf(stderr, "\n");
++            }
++            GLint shade = 0, cullMode = 0, frontFace = 0, depthFunc = 0, matrixMode = 0;
++            GLboolean depthMask = 0;
++            GLfloat mv[16] = {};
++            glad_glGetIntegerv(GL_SHADE_MODEL, &shade);
++            glad_glGetIntegerv(GL_CULL_FACE_MODE, &cullMode);
++            glad_glGetIntegerv(GL_FRONT_FACE, &frontFace);
++            glad_glGetIntegerv(GL_DEPTH_FUNC, &depthFunc);
++            glad_glGetIntegerv(GL_MATRIX_MODE, &matrixMode);
++            glad_glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
++            glad_glGetFloatv(GL_MODELVIEW_MATRIX, mv);
++            std::fprintf(stderr, "[normals]   state: lighting=%d light0=%d light1=%d colorMaterial=%d rescale=%d normalize=%d cull=%d depthTest=%d tex2d=%d blend=%d\n",
++                         glad_glIsEnabled(GL_LIGHTING), glad_glIsEnabled(GL_LIGHT0), glad_glIsEnabled(GL_LIGHT1), glad_glIsEnabled(GL_COLOR_MATERIAL),
++                         glad_glIsEnabled(GL_RESCALE_NORMAL), glad_glIsEnabled(GL_NORMALIZE), glad_glIsEnabled(GL_CULL_FACE),
++                         glad_glIsEnabled(GL_DEPTH_TEST), glad_glIsEnabled(GL_TEXTURE_2D), glad_glIsEnabled(GL_BLEND));
++            std::fprintf(stderr, "[normals]   shadeModel=0x%x cullMode=0x%x frontFace=0x%x depthFunc=0x%x depthMask=%d matrixMode=0x%x\n", shade, cullMode,
++                         frontFace, depthFunc, depthMask, matrixMode);
++            std::fprintf(stderr, "[normals]   modelview: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f\n", mv[0], mv[1],
++                         mv[2], mv[3], mv[4], mv[5], mv[6], mv[7], mv[8], mv[9], mv[10], mv[11], mv[12], mv[13], mv[14], mv[15]);
++        }
++    }
++#endif
++
+     auto pointerForOffset = [&](int offset) -> const void*
+     {
+         return reinterpret_cast<const unsigned char*>(mesh.data) + offset;
 diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
 --- orig/src/platform/Resources_PC.cpp	2026-09-18 18:14:00.391455966 +0000
 +++ new/src/platform/Resources_PC.cpp	2026-09-19 00:44:26.198822922 +0000
@@ -1551,7 +1659,7 @@ diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
      {
 diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/SoundManager_PC.cpp
 --- orig/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.289487939 +0000
-+++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.369742281 +0000
++++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-20 20:20:24.252324201 +0000
 @@ -39,6 +39,10 @@
  #include <algorithm>
  #include <cstring>
@@ -1652,7 +1760,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
  }
  
  void SoundManager::onSoundOptionsChanged()
-@@ -342,19 +399,35 @@
+@@ -342,19 +399,37 @@
  void SoundManager::addSound(const jstring &s, const std::string &file)
  {
      if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
@@ -1672,6 +1780,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
          soundPoolStreaming.addSound(s, file);
 +#if defined(__ANDROID__)
 +        ++s_dbgStreamingRegistered;
++        std::fprintf(stderr, "[audio] addStreaming %s -> %s\n", s.c_str(), file.c_str());
 +#endif
 +    }
  }
@@ -1682,13 +1791,31 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
 +    {
          soundPoolMusic.addSound(s, file);
 +#if defined(__ANDROID__)
-+        ++s_dbgMusicRegistered;
++        if (++s_dbgMusicRegistered <= 6)
++            std::fprintf(stderr, "[audio] addMusic %s -> %s\n", s.c_str(), file.c_str());
 +#endif
 +    }
  }
  
  bool SoundManager::playMusicFileNow(const std::string &file)
-@@ -478,6 +551,14 @@
+@@ -455,9 +530,16 @@
+     if (s.empty()) return;
+ 
+     SoundPoolEntry *entry = soundPoolStreaming.getRandomSoundFromSoundPool(s);
++#if defined(__ANDROID__)
++    std::fprintf(stderr, "[audio] playStreaming '%s' at %.1f %.1f %.1f: entry=%s (streaming registered: %d)\n", s.c_str(), f, f1, f2,
++                 entry ? entry->soundUrl.c_str() : "NONE", s_dbgStreamingRegistered);
++#endif
+     if (entry != nullptr && f3 > 0.0f)
+     {
+         const float attenuation = audioStreamingAttenuation(s_listener, f, f1, f2);
++#if defined(__ANDROID__)
++        std::fprintf(stderr, "[audio] playStreaming attenuation=%.3f\n", attenuation);
++#endif
+         if (attenuation <= 0.0f)
+             return;
+ 
+@@ -478,6 +560,14 @@
      if (!loaded || !options || options->soundVolume == 0.0f) return;
  
      SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
@@ -1703,7 +1830,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
      if (entry != nullptr && f3 > 0.0f)
      {
          const float attenuation = audioSpatialAttenuation(s_listener, f, f1, f2, f3);
-@@ -495,6 +576,14 @@
+@@ -495,6 +585,14 @@
      if (!loaded || !options || options->soundVolume == 0.0f) return;
  
      SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
