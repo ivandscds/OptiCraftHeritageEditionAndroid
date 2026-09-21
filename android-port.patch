@@ -571,7 +571,7 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  		return new File_Impl("");
 diff -ruN orig/src/pc/lwjgl/Display.cpp new/src/pc/lwjgl/Display.cpp
 --- orig/src/pc/lwjgl/Display.cpp	2026-09-19 18:54:06.499800985 +0000
-+++ new/src/pc/lwjgl/Display.cpp	2026-09-20 03:54:40.611891529 +0000
++++ new/src/pc/lwjgl/Display.cpp	2026-09-21 07:14:24.969720464 +0000
 @@ -6,6 +6,9 @@
  #include "lwjgl/GLContext.h"
  #include "lwjgl/Mouse.h"
@@ -614,7 +614,17 @@ diff -ruN orig/src/pc/lwjgl/Display.cpp new/src/pc/lwjgl/Display.cpp
  		}
  	}
  
-@@ -154,6 +175,9 @@
+@@ -143,6 +164,9 @@
+ 	if (pcRenderBackendIsDirect3D9())
+ 		pcD3D9ApplyPendingResize();
+ #endif
++#if defined(__ANDROID__)
++	Keyboard::detail::flushPendingKeys();
++#endif
+ }
+ 
+ void swapBuffers()
+@@ -154,6 +178,9 @@
  		return;
  	}
  #endif
@@ -695,8 +705,16 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  
 diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
 --- orig/src/pc/lwjgl/Keyboard.cpp	2026-09-20 03:54:15.218832574 +0000
-+++ new/src/pc/lwjgl/Keyboard.cpp	2026-09-21 06:33:45.763918213 +0000
-@@ -7,6 +7,10 @@
++++ new/src/pc/lwjgl/Keyboard.cpp	2026-09-21 23:25:41.896146043 +0000
+@@ -1,12 +1,18 @@
+ ﻿#include "lwjgl/Keyboard.h"
+ 
++#include <algorithm>
+ #include <queue>
++#include <vector>
+ #include <locale>
+ #include <codecvt>
+ 
  #include "external/SDLException.h"
  
  #include "SDL_events.h"
@@ -707,7 +725,7 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  
  namespace lwjgl
  {
-@@ -294,6 +298,11 @@
+@@ -294,6 +300,11 @@
  	}
  }
  
@@ -719,7 +737,39 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  namespace detail
  {
  
-@@ -343,6 +352,20 @@
+@@ -311,6 +322,15 @@
+ static bool has_retained_event = false;
+ static Event event_retained = {};
+ 
++#if defined(__ANDROID__)
++// Printable key events are held back while text input is on: soft keyboards send them as
++// down, up, then the text (which must win), and some send only the keys.
++static std::vector<SDL_Event> pending_keys;
++static std::vector<SDL_Keycode> discarded_downs; // key-ups to drop (hardware keyboards: down, text, up)
++static int_t last_lwjgl_key_before_text = 0;
++static std::vector<int_t> matched_lwjgl_keys; // one entry per completed down/up pair, in order
++#endif
++
+ static void flushRetained()
+ {
+ 	if (!has_retained_event)
+@@ -333,8 +353,15 @@
+ 
+ static void handleCharacter(int_t character)
+ {
++#if defined(__ANDROID__)
++	// A character belongs to a key-down. Soft keyboards send key down, key up, then the text, so
++	// the retained event may be a key-up (the game ignores those and the letter would be lost).
++	if (has_retained_event && (!event_retained.down || event_retained.character != 0))
++		flushRetained();
++#else
+ 	if (has_retained_event && event_retained.character != 0)
+ 		flushRetained();
++#endif
+ 	if (!has_retained_event)
+ 		event_queue.push({KEY_NONE, character, false, true});
+ 	else
+@@ -343,6 +370,76 @@
  
  void pushEvent(const SDL_Event &e)
  {
@@ -737,14 +787,90 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
 +		}
 +	}
 +#endif
++#if defined(__ANDROID__)
++	if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
++	{
++		const SDL_Keycode sym = e.key.keysym.sym;
++		const bool printable = sym >= 32 && sym <= 126 && (e.key.keysym.mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) == 0;
++		if (SDL_IsTextInputActive() == SDL_TRUE && printable)
++		{
++			if (e.type == SDL_KEYUP)
++			{
++				auto it = std::find(discarded_downs.begin(), discarded_downs.end(), sym);
++				if (it != discarded_downs.end())
++				{
++					discarded_downs.erase(it);
++					return;
++				}
++			}
++			pending_keys.push_back(e);
++			return;
++		}
++		flushPendingKeys();
++		handleKey(keySDLToLWJGL(sym), e.key.repeat, e.key.state == SDL_PRESSED);
++		return;
++	}
++	// Text arrived: match each finished down/up pair among the held-back keys to a character,
++	// in order (a soft keyboard's own composing keys, e.g. Shift, never get an up here and are
++	// dropped instead of matched). A key with no matching up (rare, hardware race) is delivered
++	// on its own further down via flushPendingKeys.
++	for (size_t i = 0; i < pending_keys.size(); i++)
++	{
++		if (pending_keys[i].type != SDL_KEYDOWN)
++			continue;
++		bool hasUp = false;
++		for (size_t j = i + 1; j < pending_keys.size(); j++)
++			if (pending_keys[j].type == SDL_KEYUP && pending_keys[j].key.keysym.sym == pending_keys[i].key.keysym.sym)
++				hasUp = true;
++		if (hasUp)
++			matched_lwjgl_keys.push_back(keySDLToLWJGL(pending_keys[i].key.keysym.sym));
++		else
++			discarded_downs.push_back(pending_keys[i].key.keysym.sym);
++	}
++	pending_keys.clear();
++	{
++		std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> conv;
++		std::u32string utf32 = conv.from_bytes(e.text.text);
++		for (char32_t c : utf32)
++		{
++			const int_t key = !matched_lwjgl_keys.empty() ? matched_lwjgl_keys.front() : KEY_NONE;
++			if (!matched_lwjgl_keys.empty())
++				matched_lwjgl_keys.erase(matched_lwjgl_keys.begin());
++			flushRetained();
++			has_retained_event = true;
++			event_retained = { key, static_cast<int_t>(c), false, true };
++		}
++	}
++	return;
++#endif
  	if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
  	{
  		handleKey(keySDLToLWJGL(e.key.keysym.sym), e.key.repeat, e.key.state == SDL_PRESSED);
-@@ -357,6 +380,16 @@
+@@ -357,6 +454,36 @@
  	}
  }
  
 +#if defined(__ANDROID__)
++void flushPendingKeys()
++{
++	// No text came for these keys (some keyboards only send key events): type the characters
++	// from the keys themselves.
++	std::vector<SDL_Event> keys;
++	keys.swap(pending_keys);
++	for (const SDL_Event &e : keys)
++	{
++		const SDL_Keycode sym = e.key.keysym.sym;
++		handleKey(keySDLToLWJGL(sym), e.key.repeat, e.key.state == SDL_PRESSED);
++		if (e.type == SDL_KEYDOWN)
++		{
++			int_t ch = static_cast<int_t>(sym);
++			if (ch >= 'a' && ch <= 'z' && (e.key.keysym.mod & (KMOD_SHIFT | KMOD_CAPS)) != 0)
++				ch = ch - 'a' + 'A';
++			handleCharacter(ch);
++		}
++	}
++}
++
 +void pushVirtualKey(int lwjglKey, bool down)
 +{
 +	if (lwjglKey <= 0 || lwjglKey >= 256)
@@ -757,7 +883,7 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  }
  
  // Keyboard functions
-@@ -401,6 +434,17 @@
+@@ -401,6 +528,23 @@
  	allow_repeat_events = repeat;
  }
  
@@ -766,16 +892,22 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
 +{
 +	std::fprintf(stderr, "[input] text input %s\n", active ? "start" : "stop");
 +	if (active)
++	{
 +		SDL_StartTextInput();
++	}
 +	else
++	{
++		detail::flushPendingKeys();
++		detail::discarded_downs.clear();
 +		SDL_StopTextInput();
++	}
 +}
 +#endif
 +
  bool areRepeatEventsEnabled()
  {
  	return allow_repeat_events;
-@@ -427,6 +471,10 @@
+@@ -427,6 +571,10 @@
  
  bool isKeyDown(int_t key)
  {
@@ -788,20 +920,22 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  		keyboard_state = SDL_GetKeyboardState(&keyboard_state_size);
 diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
 --- orig/src/pc/lwjgl/Keyboard.h	2026-09-20 03:54:15.213390515 +0000
-+++ new/src/pc/lwjgl/Keyboard.h	2026-09-21 06:33:08.430245280 +0000
-@@ -27,6 +27,11 @@
++++ new/src/pc/lwjgl/Keyboard.h	2026-09-21 07:14:24.969268478 +0000
+@@ -27,6 +27,13 @@
  void pushEvent(const SDL_Event &e);
  #endif
  
 +#if defined(__ANDROID__)
 +// On-screen touch controls (TouchControls.cpp): a key event plus polled state.
 +void pushVirtualKey(int lwjglKey, bool down);
++// Delivers printable key events that were held back waiting for their text (see pushEvent).
++void flushPendingKeys();
 +#endif
 +
  }
  
  // Key enum
-@@ -186,6 +191,11 @@
+@@ -186,6 +193,11 @@
  // Event handling
  bool next();
  void enableRepeatEvents(bool repeat);
