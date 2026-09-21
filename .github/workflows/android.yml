@@ -226,6 +226,20 @@ jobs:
           PY
           grep -n 'LauncherActivity' "$MANIFEST"
 
+          # On-screen keyboard: plain keys instead of predictive composition. Otherwise what is
+          # typed stays in the keyboard's suggestion strip and the game only gets it on commit.
+          python3 - <<'PY2'
+          import re
+          p = 'apk/app/src/main/java/org/libsdl/app/SDLActivity.java'
+          s = open(p).read()
+          pattern = re.compile(r'outAttrs\.inputType = InputType\.TYPE_CLASS_TEXT \|\s*InputType\.TYPE_TEXT_FLAG_MULTI_LINE;')
+          assert len(pattern.findall(s)) == 1, 'inputType line not found'
+          s = pattern.sub('outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | '
+                          'InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;', s)
+          open(p, 'w').write(s)
+          PY2
+          grep -n 'NO_SUGGESTIONS' apk/app/src/main/java/org/libsdl/app/SDLActivity.java
+
           LIBDIR=apk/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$LIBDIR"
           cp "$(find build -maxdepth 1 -name libmain.so | head -n1)" "$LIBDIR/libmain.so"
@@ -272,3 +286,4 @@ jobs:
             build/libmain.so
             build/external/SDL2/libSDL2.so
           if-no-files-found: warn
+          
