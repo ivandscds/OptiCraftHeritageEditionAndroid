@@ -129,6 +129,29 @@ diff -ruN orig/src/net/minecraft/src/GuiTextField.cpp new/src/net/minecraft/src/
      isFocused = focused;
      if (parentGuiScreen != nullptr)
          parentGuiScreen->notifyTextFieldFocus(this, focused);
+diff -ruN orig/src/net/minecraft/src/NetClientHandler.cpp new/src/net/minecraft/src/NetClientHandler.cpp
+--- orig/src/net/minecraft/src/NetClientHandler.cpp	2026-09-22 05:58:20.081386852 +0000
++++ new/src/net/minecraft/src/NetClientHandler.cpp	2026-09-22 05:58:20.111776350 +0000
+@@ -1095,10 +1095,19 @@
+     {
+         terrainDownloaded = false;
+ 
++#if defined(__ANDROID__)
++        androidLogMemory("dimension change: before WorldClient");
++#endif
+         WorldSettings settings(0L, packet->creativeMode, false, false, packet->terrainType);
+         worldClient = new WorldClient(this, settings, packet->respawnDimension, packet->difficulty);
++#if defined(__ANDROID__)
++        androidLogMemory("dimension change: WorldClient constructed");
++#endif
+         worldClient->multiplayerWorld = true;
+         mc->changeWorld1(worldClient);
++#if defined(__ANDROID__)
++        androidLogMemory("dimension change: changeWorld1 done");
++#endif
+         mc->thePlayer->dimension = packet->respawnDimension;
+         mc->displayGuiScreen(new GuiDownloadTerrain(this));
+     }
 diff -ruN orig/src/net/minecraft/src/Tessellator.cpp new/src/net/minecraft/src/Tessellator.cpp
 --- orig/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.269500767 +0000
 +++ new/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.300961973 +0000
@@ -296,7 +319,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-21 00:27:30.185288998 +0000
++++ new/src/pc/Main.cpp	2026-09-22 05:59:18.243186704 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -304,7 +327,12 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #include "SDL.h"
  
  #include <cctype>
-@@ -16,6 +18,22 @@
+@@ -12,10 +14,29 @@
+ #include "net/minecraft/src/Tessellator.h"
+ 
+ #include "external/SDLException.h"
++#include "platform/Log.h"
+ 
  #include "lwjgl/GLContext.h"
  #include "pc/render/PcRenderBackend.h"
  
@@ -318,8 +346,10 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +#include <dlfcn.h>
 +#include <exception>
 +#include <fcntl.h>
++#include <signal.h>
 +#include <unistd.h>
 +#include <unwind.h>
++#include <vector>
 +
 +#include "platform/Resources.h"
 +#endif
@@ -327,7 +357,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  namespace
  {
  std::string trimUsername(std::string value)
-@@ -77,6 +95,188 @@
+@@ -77,6 +98,237 @@
  	return 0;
  }
  
@@ -359,6 +389,41 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +
 +// Best effort (not async-signal-safe, but the process is dying anyway): one line per frame,
 +// "library+offset  function". Function names come from the dynamic symbol table.
++// Logs the app's resident memory and how much the system has free, so a run that ends
++// without a crash marker (killed by Android for using too much memory, or hanging) can be
++// told apart from an actual signal: check the last of these lines before the log stops.
++} // end anonymous namespace (external linkage needed: declared in platform/Log.h, called from other translation units)
++
++void androidLogMemory(const char *label)
++{
++	long rssKb = -1;
++	if (FILE *f = std::fopen("/proc/self/status", "r"))
++	{
++		char line[256];
++		while (std::fgets(line, sizeof(line), f))
++		{
++			if (std::sscanf(line, "VmRSS: %ld kB", &rssKb) == 1)
++				break;
++		}
++		std::fclose(f);
++	}
++	long availKb = -1;
++	if (FILE *f = std::fopen("/proc/meminfo", "r"))
++	{
++		char line[256];
++		while (std::fgets(line, sizeof(line), f))
++		{
++			if (std::sscanf(line, "MemAvailable: %ld kB", &availKb) == 1)
++				break;
++		}
++		std::fclose(f);
++	}
++	std::fprintf(stderr, "[mem] %s: app RSS=%ld KB, system available=%ld KB\n", label, rssKb, availKb);
++}
++
++namespace
++{
++
 +void androidWriteBacktrace(int fd)
 +{
 +	void *frames[40];
@@ -487,8 +552,22 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	std::setvbuf(stdout, nullptr, _IONBF, 0);
 +	std::setvbuf(stderr, nullptr, _IONBF, 0);
 +	SDL_LogSetOutputFunction(androidLogOutput, nullptr);
++	// Run the handlers on their own stack: a stack-overflow SIGSEGV has no room left on the
++	// thread's own stack to even start the handler, and would otherwise die silently with
++	// nothing written to the log.
++	static std::vector<char> altStack(SIGSTKSZ * 4);
++	stack_t ss = {};
++	ss.ss_sp = altStack.data();
++	ss.ss_size = altStack.size();
++	sigaltstack(&ss, nullptr);
 +	for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL })
-+		std::signal(sig, androidSignalHandler);
++	{
++		struct sigaction action = {};
++		action.sa_handler = androidSignalHandler;
++		action.sa_flags = SA_ONSTACK;
++		sigemptyset(&action.sa_mask);
++		sigaction(sig, &action, nullptr);
++	}
 +	std::fprintf(stderr, "[boot] log started\n");
 +	androidApplyGlEnvFile();
 +}
@@ -516,7 +595,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  std::string loadUsername()
  {
  	const std::filesystem::path path =
-@@ -97,13 +297,16 @@
+@@ -97,13 +349,16 @@
  }
  }
  
@@ -534,7 +613,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #if PLATFORM_PC_LEGACY
  	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
  #endif
-@@ -116,7 +319,39 @@
+@@ -116,7 +371,39 @@
  	if (argc >= 3 && std::strlen(argv[2]) > 1)
  		auth = argv[2];
  
@@ -1914,6 +1993,23 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
      auto pointerForOffset = [&](int offset) -> const void*
      {
          return reinterpret_cast<const unsigned char*>(mesh.data) + offset;
+diff -ruN orig/src/platform/Log.h new/src/platform/Log.h
+--- orig/src/platform/Log.h	2026-09-22 05:58:51.426284033 +0000
++++ new/src/platform/Log.h	2026-09-22 05:58:51.436353402 +0000
+@@ -1,6 +1,13 @@
+ #pragma once
+ 
+ #include <cstdarg>
++
++#if defined(__ANDROID__)
++// Logs the app's resident memory and how much the system has free (implemented in
++// pc/Main.cpp). Bracket an expensive or memory-heavy step with this to tell an actual
++// crash apart from a run Android silently killed for using too much memory.
++void androidLogMemory(const char *label);
++#endif
+ #include "platform/PlatformConfig.h"
+ 
+ #ifndef MC_LOG_LEVEL
 diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
 --- orig/src/platform/Resources_PC.cpp	2026-09-18 18:14:00.391455966 +0000
 +++ new/src/platform/Resources_PC.cpp	2026-09-19 00:44:26.198822922 +0000
