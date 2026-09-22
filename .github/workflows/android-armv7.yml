@@ -1,0 +1,306 @@
+name: Android build (armv7)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [armeabi-v7a]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Fetch missing dependencies
+        shell: bash
+        run: |
+          if [ ! -f external/SDL_net/CMakeLists.txt ]; then
+            rm -rf external/SDL_net
+            git clone --depth 1 --branch SDL2 https://github.com/libsdl-org/SDL_net external/SDL_net
+          fi
+          if [ ! -f external/gl4es/CMakeLists.txt ]; then
+            rm -rf external/gl4es
+            git clone --depth 1 https://github.com/ptitSeb/gl4es external/gl4es
+          fi
+          # gl4es bug: the FPE error paths pass gl4es' own shader/program ids to the raw
+          # GLES info-log calls, so the log printed is uninitialised garbage. Use its wrappers.
+          sed -i 's/gles_glGetShaderInfoLog(/gl4es_glGetShaderInfoLog(/g; s/gles_glGetProgramInfoLog(/gl4es_glGetProgramInfoLog(/g' external/gl4es/src/gl/fpe.c
+
+      - name: Apply Android patch
+        shell: bash
+        run: |
+          cp android.cmake cmake/android.cmake
+          # send gl4es messages to stdout (-> last_run.log) instead of logcat
+          sed -i 's/USE_ANDROID_LOG ON/USE_ANDROID_LOG OFF/' cmake/android.cmake
+          if grep -q 'cmake/android.cmake' CMakeLists.txt; then
+            echo "Patch already applied"
+          else
+            patch -p1 -l < android-port.patch
+          fi
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_ARM_NEON=ON \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMC_LOG_LEVEL=2 2>&1 | tee configure.log
+
+      - name: Build (keep going to collect every error)
+        shell: bash
+        run: |
+          cmake --build build --target main -- -k 0 2>&1 | tee build.log
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Package APK
+        if: success()
+        shell: bash
+        run: |
+          set -e
+          rm -rf apk
+          cp -r external/SDL2/android-project apk
+          chmod +x apk/gradlew
+
+          # App name and storage access: game data is read from /sdcard/OptiCraft
+          # (needs "All files access") or from the app's own Android/data folder.
+          MANIFEST=apk/app/src/main/AndroidManifest.xml
+          sed -i 's|<uses-permission android:name="android.permission.VIBRATE" />|&\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />|' "$MANIFEST"
+          sed -i 's|<application |<application android:requestLegacyExternalStorage="true" |' "$MANIFEST"
+          sed -i 's|>Game<|>OptiCraft<|' apk/app/src/main/res/values/strings.xml
+          grep -n 'EXTERNAL_STORAGE\|requestLegacy' "$MANIFEST"
+
+          # Minimal app module: SDL's Java sources + the prebuilt native libs.
+          cat > apk/app/build.gradle <<'GRADLE'
+          apply plugin: 'com.android.application'
+
+          android {
+              namespace "org.libsdl.app"
+              compileSdkVersion 34
+              defaultConfig {
+                  applicationId "org.opticraft.heritage"
+                  minSdkVersion 24
+                  targetSdkVersion 34
+                  versionCode 1
+                  versionName "1.0"
+                  ndk { abiFilters 'armeabi-v7a' }
+              }
+              buildTypes {
+                  release { minifyEnabled false }
+              }
+              lint { abortOnError false }
+          }
+
+          dependencies {
+              implementation fileTree(include: ['*.jar'], dir: 'libs')
+          }
+          GRADLE
+
+          # Launcher screen that asks for storage access, then starts the SDL activity.
+          JAVA_DIR=apk/app/src/main/java/org/opticraft/heritage
+          mkdir -p "$JAVA_DIR"
+          cat > "$JAVA_DIR/LauncherActivity.java" <<'JAVA'
+          package org.opticraft.heritage;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.provider.Settings;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class LauncherActivity extends Activity {
+              private static final int REQ_STORAGE = 42;
+
+              private boolean hasAccess() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      return Environment.isExternalStorageManager();
+                  }
+                  return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                      && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+              }
+
+              private void startGame() {
+                  startActivity(new Intent(this, org.libsdl.app.SDLActivity.class));
+                  finish();
+              }
+
+              private void askPermission() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      try {
+                          startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                              Uri.parse("package:" + getPackageName())));
+                      } catch (Exception e) {
+                          try {
+                              startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                          } catch (Exception e2) {
+                              // No settings screen available on this device.
+                          }
+                      }
+                  } else {
+                      requestPermissions(new String[] {
+                          Manifest.permission.READ_EXTERNAL_STORAGE,
+                          Manifest.permission.WRITE_EXTERNAL_STORAGE }, REQ_STORAGE);
+                  }
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setGravity(Gravity.CENTER);
+                  int pad = (int) (24 * getResources().getDisplayMetrics().density);
+                  root.setPadding(pad, pad, pad, pad);
+
+                  TextView text = new TextView(this);
+                  text.setText("OptiCraft necesita acceso a todos los archivos para leer los assets "
+                      + "desde /sdcard/OptiCraft/.\n\nToca el primer boton, activa el permiso y vuelve atras.");
+                  text.setTextSize(16);
+                  root.addView(text);
+
+                  Button grant = new Button(this);
+                  grant.setText("Dar permiso de archivos");
+                  grant.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) { askPermission(); }
+                  });
+                  root.addView(grant);
+
+                  Button open = new Button(this);
+                  open.setText("Abrir el juego igual");
+                  open.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) { startGame(); }
+                  });
+                  root.addView(open);
+
+                  setContentView(root);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  if (hasAccess()) {
+                      startGame();
+                  }
+              }
+          }
+          JAVA
+
+          python3 - <<'PY'
+          import re
+          p = 'apk/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          launcher = re.compile(r'<intent-filter>\s*<action android:name="android.intent.action.MAIN" />\s*<category android:name="android.intent.category.LAUNCHER" />\s*</intent-filter>')
+          assert launcher.search(s), 'launcher intent-filter not found'
+          s = launcher.sub('', s, count=1)
+          act = ('<activity android:name="org.opticraft.heritage.LauncherActivity"'
+                 ' android:label="@string/app_name" android:screenOrientation="sensorLandscape" android:exported="true">'
+                 '<intent-filter><action android:name="android.intent.action.MAIN" />'
+                 '<category android:name="android.intent.category.LAUNCHER" /></intent-filter>'
+                 '</activity>\n    ')
+          assert '</application>' in s
+          s = s.replace('</application>', act + '</application>', 1)
+          # Landscape for the game activity too (the launcher screen above already has it).
+          assert '<activity android:name="SDLActivity"' in s
+          s = s.replace('<activity android:name="SDLActivity"', '<activity android:name="SDLActivity" android:screenOrientation="sensorLandscape"', 1)
+          open(p, 'w').write(s)
+          PY
+          grep -n 'LauncherActivity' "$MANIFEST"
+
+          # On-screen keyboard: plain keys instead of predictive composition. Otherwise what is
+          # typed stays in the keyboard's suggestion strip and the game only gets it on commit.
+          python3 - <<'PY2'
+          import re
+          p = 'apk/app/src/main/java/org/libsdl/app/SDLActivity.java'
+          s = open(p).read()
+          pattern = re.compile(r'outAttrs\.inputType = InputType\.TYPE_CLASS_TEXT \|\s*InputType\.TYPE_TEXT_FLAG_MULTI_LINE;')
+          assert len(pattern.findall(s)) == 1, 'inputType line not found'
+          s = pattern.sub('outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | '
+                          'InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;', s)
+          open(p, 'w').write(s)
+          PY2
+          grep -n 'NO_SUGGESTIONS' apk/app/src/main/java/org/libsdl/app/SDLActivity.java
+
+          # A plain `new Thread()` on Android gets a much smaller native stack than a desktop
+          # main thread. This game's world lighting can recurse deeply right after generating a
+          # large area (e.g. arriving in a fresh dimension), which fit on a desktop stack but
+          # silently overflowed this one -- a stack-overflow SIGSEGV can even take out the
+          # process before it reaches our own signal handler. Give the game thread a desktop-sized
+          # stack instead of the JVM's small default.
+          python3 - <<'PY3'
+          p = 'apk/app/src/main/java/org/libsdl/app/SDLActivity.java'
+          s = open(p).read()
+          old = 'mSDLThread = new Thread(new SDLMain(), "SDLThread");'
+          assert s.count(old) == 1, 'SDLThread creation line not found'
+          new = 'mSDLThread = new Thread(null, new SDLMain(), "SDLThread", 16 * 1024 * 1024);'
+          open(p, 'w').write(s.replace(old, new, 1))
+          PY3
+          grep -n 'SDLThread(' apk/app/src/main/java/org/libsdl/app/SDLActivity.java || true
+          grep -n 'mSDLThread = new Thread' apk/app/src/main/java/org/libsdl/app/SDLActivity.java
+
+          LIBDIR=apk/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p "$LIBDIR"
+          cp "$(find build -maxdepth 1 -name libmain.so | head -n1)" "$LIBDIR/libmain.so"
+          cp "$(find build -name libSDL2.so | head -n1)" "$LIBDIR/libSDL2.so"
+          STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          "$STRIP" --strip-unneeded "$LIBDIR"/*.so || true
+          ls -la "$LIBDIR"
+
+          cd apk
+          ./gradlew --no-daemon --console=plain assembleDebug 2>&1 | tee ../apk.log
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: apk/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
+      - name: Error summary
+        if: always()
+        shell: bash
+        run: |
+          echo "=== first errors ==="
+          grep -nE "CMake Error|error:|FAILED:|undefined reference|fatal error" configure.log build.log 2>/dev/null | head -150 || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.abi }}
+          path: |
+            configure.log
+            build.log
+            apk.log
+          if-no-files-found: ignore
+
+      - name: Upload libs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libs-${{ matrix.abi }}
+          path: |
+            build/libmain.so
+            build/external/SDL2/libSDL2.so
+          if-no-files-found: warn
