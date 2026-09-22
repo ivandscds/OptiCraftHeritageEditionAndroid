@@ -49,7 +49,7 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  # expose. The desktop target left it undefined, so platform/Log.h fell back to 0
 diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
 --- orig/src/client/Minecraft.cpp	2026-09-21 06:33:08.413503767 +0000
-+++ new/src/client/Minecraft.cpp	2026-09-21 06:33:45.764752434 +0000
++++ new/src/client/Minecraft.cpp	2026-09-22 07:01:07.839754004 +0000
 @@ -1241,6 +1241,9 @@
          return;
      if (currentScreen != nullptr)
@@ -60,6 +60,36 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
  #if PLATFORM_SYNC_STATS_ON_GUI_CHANGE
      if (dynamic_cast<GuiMainMenu *>(guiscreen) != nullptr)
          statFileWriter->prepareStatsForSync();
+@@ -2500,6 +2503,9 @@
+         for (int_t l = -c; l <= c; l += 16)
+         {
+             loadingScreen->setLoadingProgress((i++ * 100) / j);
++#if defined(__ANDROID__)
++            androidSetCheckpoint("preloadWorld: column %d,%d (%d/%d)", (int)(chunkcoordinates.x + k), (int)(chunkcoordinates.z + l), i, (int)j);
++#endif
+             preloadColumn(chunkcoordinates.x + k, chunkcoordinates.z + l);
+         }
+     }
+@@ -2520,6 +2526,9 @@
+             for (int_t chunkZ = -residentRadius; chunkZ <= residentRadius; ++chunkZ)
+             {
+                 loadingScreen->setLoadingProgress((residentDone++ * 100) / residentTotal);
++#if defined(__ANDROID__)
++                androidSetCheckpoint("preloadWorld: resident column %d,%d (%d/%d)", (int)chunkX, (int)chunkZ, residentDone, (int)residentTotal);
++#endif
+                 preloadColumn(chunkX * 16 + 8, chunkZ * 16 + 8);
+             }
+         }
+@@ -2530,6 +2539,9 @@
+     theWorld->findingSpawnPoint = previousFindingSpawnPoint;
+ #endif
+ 
++#if defined(__ANDROID__)
++    androidSetCheckpoint("preloadWorld: simulating world for a bit");
++#endif
+     loadingScreen->displayLoadingString("Simulating world for a bit");
+ #if PLATFORM_UNLOAD_AFTER_PRELOAD
+     theWorld->unloadAllChunks();
 diff -ruN orig/src/java/JavaNetwork.cpp new/src/java/JavaNetwork.cpp
 --- orig/src/java/JavaNetwork.cpp	2026-09-22 05:24:15.100048169 +0000
 +++ new/src/java/JavaNetwork.cpp	2026-09-22 05:24:15.111970346 +0000
@@ -115,6 +145,48 @@ diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
  #ifdef __LITTLE_ENDIAN
  #define __HI(x) *(1+(int*)&x)
  #define __LO(x) *(int*)&x
+diff -ruN orig/src/net/minecraft/src/ChunkProviderEnd.cpp new/src/net/minecraft/src/ChunkProviderEnd.cpp
+--- orig/src/net/minecraft/src/ChunkProviderEnd.cpp	2026-09-22 07:01:07.819033209 +0000
++++ new/src/net/minecraft/src/ChunkProviderEnd.cpp	2026-09-22 07:01:07.837650556 +0000
+@@ -1,4 +1,7 @@
+ #include "ChunkProviderEnd.h"
++#if defined(__ANDROID__)
++#include "platform/Log.h"
++#endif
+ 
+ #include <algorithm>
+ #include <cmath>
+@@ -136,6 +139,9 @@
+ 
+ Chunk *ChunkProviderEnd::provideChunk(int_t x, int_t z)
+ {
++#if defined(__ANDROID__)
++	androidSetCheckpoint("generating End chunk %d,%d", (int)x, (int)z);
++#endif
+ 	const long_t seedX = JavaArithmetic::longMul((long_t)x, 341873128712LL);
+ 	const long_t seedZ = JavaArithmetic::longMul((long_t)z, 132897987541LL);
+ 	endRNG.setSeed(JavaArithmetic::longAdd(seedX, seedZ));
+diff -ruN orig/src/net/minecraft/src/EntityDragon.cpp new/src/net/minecraft/src/EntityDragon.cpp
+--- orig/src/net/minecraft/src/EntityDragon.cpp	2026-09-22 07:01:07.823795693 +0000
++++ new/src/net/minecraft/src/EntityDragon.cpp	2026-09-22 07:01:07.837901902 +0000
+@@ -1,4 +1,7 @@
+ #include "EntityDragon.h"
++#if defined(__ANDROID__)
++#include "platform/Log.h"
++#endif
+ 
+ #include <cmath>
+ #include <limits>
+@@ -129,6 +132,9 @@
+ 
+ void EntityDragon::onLivingUpdate()
+ {
++#if defined(__ANDROID__)
++	androidSetCheckpoint("dragon onLivingUpdate");
++#endif
+ #if PLATFORM_PROFILE_RENDER_PHASES
+     // Reported as its own tick phase so the End fight shows up in the frame
+     // log separately from the entTick total it is part of.
 diff -ruN orig/src/net/minecraft/src/GuiTextField.cpp new/src/net/minecraft/src/GuiTextField.cpp
 --- orig/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:08.406600495 +0000
 +++ new/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:45.764140303 +0000
@@ -319,7 +391,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-22 06:35:31.150967555 +0000
++++ new/src/pc/Main.cpp	2026-09-22 07:00:49.140532559 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -327,7 +399,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #include "SDL.h"
  
  #include <cctype>
-@@ -12,10 +14,29 @@
+@@ -12,10 +14,34 @@
  #include "net/minecraft/src/Tessellator.h"
  
  #include "external/SDLException.h"
@@ -350,6 +422,11 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +#include <unistd.h>
 +#include <unwind.h>
 +#include <vector>
++#include <atomic>
++#include <cstdarg>
++#include <cstring>
++#include <mutex>
++#include <thread>
 +
 +#include "platform/Resources.h"
 +#endif
@@ -357,7 +434,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  namespace
  {
  std::string trimUsername(std::string value)
-@@ -77,6 +98,237 @@
+@@ -77,6 +103,286 @@
  	return 0;
  }
  
@@ -393,6 +470,54 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +// without a crash marker (killed by Android for using too much memory, or hanging) can be
 +// told apart from an actual signal: check the last of these lines before the log stops.
 +} // end anonymous namespace (external linkage needed: declared in platform/Log.h, called from other translation units)
++
++namespace
++{
++std::mutex g_checkpointLock;
++char g_checkpoint[256] = "(none yet)";
++std::atomic<long> g_checkpointCount{0};
++
++void androidWatchdogRun()
++{
++	long lastCount = -1;
++	int sameCountTicks = 0;
++	while (true)
++	{
++		std::this_thread::sleep_for(std::chrono::seconds(1));
++		char copy[256];
++		{
++			std::lock_guard<std::mutex> guard(g_checkpointLock);
++			std::memcpy(copy, g_checkpoint, sizeof(copy));
++		}
++		const long count = g_checkpointCount.load();
++		// Once the checkpoint stops changing, the game is either idle at a menu (fine) or
++		// stuck: repeat less often so an idle session doesn't spam the log for hours.
++		if (count == lastCount)
++		{
++			if (++sameCountTicks % 15 != 1)
++				continue;
++		}
++		else
++		{
++			sameCountTicks = 0;
++		}
++		lastCount = count;
++		std::fprintf(stderr, "[watchdog] last known: %s\n", copy);
++	}
++}
++}
++
++void androidSetCheckpoint(const char *format, ...)
++{
++	char buffer[256];
++	va_list args;
++	va_start(args, format);
++	std::vsnprintf(buffer, sizeof(buffer), format, args);
++	va_end(args);
++	std::lock_guard<std::mutex> guard(g_checkpointLock);
++	std::memcpy(g_checkpoint, buffer, sizeof(buffer));
++	g_checkpointCount.fetch_add(1, std::memory_order_relaxed);
++}
 +
 +void androidLogMemory(const char *label)
 +{
@@ -570,6 +695,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	}
 +	std::fprintf(stderr, "[boot] log started\n");
 +	androidApplyGlEnvFile();
++	std::thread(androidWatchdogRun).detach();
 +}
 +
 +bool androidHasGameData()
@@ -595,7 +721,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  std::string loadUsername()
  {
  	const std::filesystem::path path =
-@@ -97,13 +349,16 @@
+@@ -97,13 +403,16 @@
  }
  }
  
@@ -613,7 +739,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
  #if PLATFORM_PC_LEGACY
  	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
  #endif
-@@ -116,7 +371,39 @@
+@@ -116,7 +425,39 @@
  	if (argc >= 3 && std::strlen(argv[2]) > 1)
  		auth = argv[2];
  
@@ -1995,8 +2121,8 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
          return reinterpret_cast<const unsigned char*>(mesh.data) + offset;
 diff -ruN orig/src/platform/Log.h new/src/platform/Log.h
 --- orig/src/platform/Log.h	2026-09-22 05:58:51.426284033 +0000
-+++ new/src/platform/Log.h	2026-09-22 05:58:51.436353402 +0000
-@@ -1,6 +1,13 @@
++++ new/src/platform/Log.h	2026-09-22 07:00:49.140277038 +0000
+@@ -1,6 +1,20 @@
  #pragma once
  
  #include <cstdarg>
@@ -2006,6 +2132,13 @@ diff -ruN orig/src/platform/Log.h new/src/platform/Log.h
 +// pc/Main.cpp). Bracket an expensive or memory-heavy step with this to tell an actual
 +// crash apart from a run Android silently killed for using too much memory.
 +void androidLogMemory(const char *label);
++
++// Records where the game was last known to be, from a background watchdog thread that
++// writes it to last_run.log once a second regardless of what the main thread is doing.
++// A crash silent enough to leave no crash marker and no backtrace (a hard kill by the
++// OS, or a fault our own signal handler can't survive) still leaves this behind, since
++// it isn't written by the thread that dies.
++void androidSetCheckpoint(const char *format, ...);
 +#endif
  #include "platform/PlatformConfig.h"
  
