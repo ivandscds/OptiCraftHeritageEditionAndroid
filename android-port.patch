@@ -319,7 +319,7 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 --- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-22 05:59:18.243186704 +0000
++++ new/src/pc/Main.cpp	2026-09-22 06:35:31.150967555 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -555,7 +555,7 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +	// Run the handlers on their own stack: a stack-overflow SIGSEGV has no room left on the
 +	// thread's own stack to even start the handler, and would otherwise die silently with
 +	// nothing written to the log.
-+	static std::vector<char> altStack(SIGSTKSZ * 4);
++	static std::vector<char> altStack(1 << 20); // 1 MB: our own handler (backtrace, demangling) needs real room
 +	stack_t ss = {};
 +	ss.ss_sp = altStack.data();
 +	ss.ss_size = altStack.size();
