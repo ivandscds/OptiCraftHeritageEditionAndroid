@@ -1912,7 +1912,7 @@ diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
      {
 diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/SoundManager_PC.cpp
 --- orig/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.289487939 +0000
-+++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-20 20:20:24.252324201 +0000
++++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-22 04:51:54.616906747 +0000
 @@ -39,6 +39,10 @@
  #include <algorithm>
  #include <cstring>
@@ -1987,7 +1987,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
      // Soft clip to [-1, 1]
      for (int i = 0; i < frames * CHANNELS; i++)
      {
-@@ -287,6 +325,25 @@
+@@ -287,6 +325,13 @@
      }
      SDL_PauseAudioDevice(s_device, 0); // start playback
      loaded = true;
@@ -1996,24 +1996,12 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
 +        const char *driver = SDL_GetCurrentAudioDriver();
 +        std::fprintf(stderr, "[audio] device open: driver=%s freq=%d channels=%d format=0x%x samples=%d\n",
 +                     driver ? driver : "?", have.freq, (int)have.channels, (unsigned)have.format, (int)have.samples);
-+        // Short test tone: if it is heard, the output path works and the problem is in the game sounds.
-+        std::vector<float> tone;
-+        const int toneFrames = SAMPLE_RATE / 5;
-+        tone.reserve((size_t)toneFrames * 2);
-+        for (int i = 0; i < toneFrames; i++)
-+        {
-+            const float envelope = 1.0f - (float)i / (float)toneFrames;
-+            const float v = 0.5f * envelope * std::sin(2.0f * 3.14159265f * 660.0f * (float)i / (float)SAMPLE_RATE);
-+            tone.push_back(v);
-+            tone.push_back(v);
-+        }
-+        playPCM(std::move(tone), 0.8f, false, AudioBus::Sound);
 +    }
 +#endif
  }
  
  void SoundManager::onSoundOptionsChanged()
-@@ -342,19 +399,37 @@
+@@ -342,19 +387,37 @@
  void SoundManager::addSound(const jstring &s, const std::string &file)
  {
      if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
@@ -2051,7 +2039,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
  }
  
  bool SoundManager::playMusicFileNow(const std::string &file)
-@@ -455,9 +530,16 @@
+@@ -455,9 +518,16 @@
      if (s.empty()) return;
  
      SoundPoolEntry *entry = soundPoolStreaming.getRandomSoundFromSoundPool(s);
@@ -2068,7 +2056,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
          if (attenuation <= 0.0f)
              return;
  
-@@ -478,6 +560,14 @@
+@@ -478,6 +548,14 @@
      if (!loaded || !options || options->soundVolume == 0.0f) return;
  
      SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
@@ -2083,7 +2071,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
      if (entry != nullptr && f3 > 0.0f)
      {
          const float attenuation = audioSpatialAttenuation(s_listener, f, f1, f2, f3);
-@@ -495,6 +585,14 @@
+@@ -495,6 +573,14 @@
      if (!loaded || !options || options->soundVolume == 0.0f) return;
  
      SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
