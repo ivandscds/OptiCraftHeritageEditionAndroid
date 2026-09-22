@@ -1,0 +1,2126 @@
+diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
+--- orig/CMakeLists.txt	2026-09-18 18:14:00.373740144 +0000
++++ new/CMakeLists.txt	2026-09-19 22:58:56.228264255 +0000
+@@ -47,6 +47,17 @@
+     return()
+ endif()
+ 
++# Android build. cmake/android.cmake (used with the NDK toolchain, which
++# defines ANDROID) builds libmain.so for SDL's SDLActivity and return()s, same
++# shape as the PS2/Wii branches above.
++if(ANDROID)
++    # fdlibm reads the words of a double through *(int*)&x.
++    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")
++    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing")
++    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/android.cmake)
++    return()
++endif()
++
+ enable_testing()
+ 
+ function(opticraft_add_optional_test target test_source)
+@@ -164,7 +175,7 @@
+ # Build the desktop target from common code plus the PC tree. Foreign console
+ # sources are never discovered, so adding a new Wii/PS2 .cpp cannot silently
+ # enter a desktop link.
+-opticraft_collect_platform_sources(OPTICRAFT_COMMON_SOURCES pc)
++mcbeta_collect_platform_sources(OPTICRAFT_COMMON_SOURCES pc)
+ set(OPTICRAFT_MINIZIP_SOURCES
+     "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib/contrib/minizip/ioapi.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib/contrib/minizip/unzip.c"
+@@ -175,15 +186,15 @@
+ )
+ 
+ if(WIN32)
+-    opticraft_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]linux[/\\]")
++    mcbeta_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]linux[/\\]")
+ elseif(UNIX)
+-    opticraft_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]win32[/\\]")
++    mcbeta_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]win32[/\\]")
+ else()
+     message(FATAL_ERROR "OptiCraft currently supports Windows and Linux only")
+ endif()
+ 
+ # Each public platform facade has exactly one implementation in this target.
+-opticraft_select_platform_backends(OPTICRAFT_COMMON_SOURCES PC PC PC)
++mcbeta_select_platform_backends(OPTICRAFT_COMMON_SOURCES PC PC PC)
+ 
+ # Unified diagnostic verbosity, the same knob cmake/ps2.cmake and cmake/wii.cmake
+ # expose. The desktop target left it undefined, so platform/Log.h fell back to 0
+diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
+--- orig/src/client/Minecraft.cpp	2026-09-21 06:33:08.413503767 +0000
++++ new/src/client/Minecraft.cpp	2026-09-21 06:33:45.764752434 +0000
+@@ -1241,6 +1241,9 @@
+         return;
+     if (currentScreen != nullptr)
+         currentScreen->onGuiClosed();
++#if defined(__ANDROID__)
++    lwjgl::Keyboard::setTextInputActive(false); // a new screen shows it again if it has a focused text field
++#endif
+ #if PLATFORM_SYNC_STATS_ON_GUI_CHANGE
+     if (dynamic_cast<GuiMainMenu *>(guiscreen) != nullptr)
+         statFileWriter->prepareStatsForSync();
+diff -ruN orig/src/java/JavaNetwork.cpp new/src/java/JavaNetwork.cpp
+--- orig/src/java/JavaNetwork.cpp	2026-09-22 05:24:15.100048169 +0000
++++ new/src/java/JavaNetwork.cpp	2026-09-22 05:24:15.111970346 +0000
+@@ -97,7 +97,14 @@
+ 		while (!closing.load(std::memory_order_acquire) &&
+ 		       !readInterrupted.load(std::memory_order_acquire))
+ 		{
+-			std::lock_guard<std::mutex> guard(socketIoLock);
++			// Reading and writing a TCP socket work on independent buffers (kernel send/recv
++			// queues) and can safely run concurrently. A single shared lock here made the write
++			// thread wait out this loop's 100ms poll almost every cycle, delaying the handshake
++			// packet by seconds and sometimes past the server's login timeout, or past the point
++			// where the server had already closed the connection. Two locks (one for reads, one
++			// for writes) only serialize each side against itself, which is all that is needed
++			// since there's one reader thread and one writer thread.
++			std::lock_guard<std::mutex> guard(readLock);
+ 			if (closing.load(std::memory_order_acquire) ||
+ 			    readInterrupted.load(std::memory_order_acquire))
+ 				return -1;
+@@ -120,7 +127,7 @@
+ 		if (length <= 0)
+ 			return true;
+ 
+-		std::lock_guard<std::mutex> guard(socketIoLock);
++		std::lock_guard<std::mutex> guard(writeLock);
+ 		int offset = 0;
+ 		while (offset < length)
+ 		{
+@@ -178,7 +185,8 @@
+ 	TCPsocket socket = nullptr;
+ 	SDLNet_SocketSet socketSet = nullptr;
+ 	bool socketInSet = false;
+-	std::mutex socketIoLock;
++	std::mutex readLock;
++	std::mutex writeLock;
+ 	std::atomic_bool closing{false};
+ 	std::atomic_bool readInterrupted{false};
+ 	std::string remoteSocketAddress;
+diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
+--- orig/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.901063291 +0000
++++ new/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.933083356 +0000
+@@ -24,6 +24,13 @@
+ #endif
+ #endif
+ 
++/* aarch64 (Android) and other little-endian targets match none of the names above,
++   which silently selected the big-endian __HI/__LO layout and made sqrt/sin/cos/pow/
++   atan2/log return garbage or NaN. Ask the compiler instead. */
++#if !defined(__LITTLE_ENDIAN) && defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
++#define __LITTLE_ENDIAN 1234
++#endif
++
+ #ifdef __LITTLE_ENDIAN
+ #define __HI(x) *(1+(int*)&x)
+ #define __LO(x) *(int*)&x
+diff -ruN orig/src/net/minecraft/src/GuiTextField.cpp new/src/net/minecraft/src/GuiTextField.cpp
+--- orig/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:08.406600495 +0000
++++ new/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:45.764140303 +0000
+@@ -387,6 +387,10 @@
+ {
+     if (focused && !isFocused)
+         cursorCounter = 0;
++#if defined(__ANDROID__)
++    if (focused != isFocused)
++        lwjgl::Keyboard::setTextInputActive(focused); // the on-screen keyboard follows the focused field
++#endif
+     isFocused = focused;
+     if (parentGuiScreen != nullptr)
+         parentGuiScreen->notifyTextFieldFocus(this, focused);
+diff -ruN orig/src/net/minecraft/src/Tessellator.cpp new/src/net/minecraft/src/Tessellator.cpp
+--- orig/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.269500767 +0000
++++ new/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.300961973 +0000
+@@ -687,6 +687,12 @@
+ 			{
+ 				rawBuffer[rawBufferIndex + 5] = rawBuffer[(rawBufferIndex - j) + 5];
+ 			}
++			if (hasNormals)
++			{
++				// The two extra vertices of a quad split into triangles need the normal too; without
++				// it they were (0,0,0) and lit surfaces got a diagonal split with a gradient.
++				rawBuffer[rawBufferIndex + 6] = rawBuffer[(rawBufferIndex - j) + 6];
++			}
+ 			if (hasBrightness)
+ 			{
+ 				rawBuffer[rawBufferIndex + 7] = rawBuffer[(rawBufferIndex - j) + 7];
+diff -ruN orig/src/net/minecraft/src/TexturePackList.cpp new/src/net/minecraft/src/TexturePackList.cpp
+--- orig/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.615847143 +0000
++++ new/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.853650787 +0000
+@@ -82,7 +82,7 @@
+ 			if (lowerName.size() < 4 || lowerName.compare(lowerName.size() - 4, 4, ".zip") != 0) continue;
+ 
+ 			auto file = entry.path();
+-			std::string s = filename + ":" + std::to_string(fs::file_size(file)) + ":" + std::to_string(fs::last_write_time(file).time_since_epoch().count());
++			std::string s = filename + ":" + std::to_string(fs::file_size(file)) + ":" + std::to_string(static_cast<long long>(fs::last_write_time(file).time_since_epoch().count()));
+ 
+ 			try
+ 			{
+diff -ruN orig/src/net/minecraft/src/ThreadDownloadResources.cpp new/src/net/minecraft/src/ThreadDownloadResources.cpp
+--- orig/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-09-20 19:18:08.411902439 +0000
++++ new/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-09-20 20:03:39.457949689 +0000
+@@ -1,4 +1,10 @@
+ #include "ThreadDownloadResources.h"
++
++#if defined(__ANDROID__)
++#include <cstdio>
++static int s_dbgInstalled = 0;
++static int s_dbgFailed = 0;
++#endif
+ #include "platform/Log.h"
+ 
+ #include "Minecraft.h"
+@@ -101,6 +107,9 @@
+ 	catch (std::exception &exception)
+ 	{
+ 		loadResource(resourcesFolder, "");
++#if defined(__ANDROID__)
++		std::fprintf(stderr, "[res] fallback finished: folder=%s pakMounted=%d installed=%d failed=%d\n", resourcesFolder.c_str(), AssetPak::mounted() ? 1 : 0, s_dbgInstalled, s_dbgFailed);
++#endif
+ 		MC_LOG_ERROR("game", "%s\n", exception.what());
+ 	}
+ #endif
+@@ -120,7 +129,12 @@
+ {
+ 	std::vector<std::string> names;
+ 	if (!AssetPak::listChildren(directoryKey, names))
++	{
++#if defined(__ANDROID__)
++		std::fprintf(stderr, "[res] pak has no entries under %s/\n", directoryKey.c_str());
++#endif
+ 		return false;
++	}
+ 
+ 	std::sort(names.begin(), names.end());
+ 	for (const std::string &name : names)
+@@ -138,6 +152,9 @@
+ 		try
+ 		{
+ 			mc->installResource(s + name, AssetPak::makePath(key));
++#if defined(__ANDROID__)
++			++s_dbgInstalled;
++#endif
+ #if PLATFORM_LOCAL_RESOURCES_ONLY
+ 			++s_localResourceCount;
+ #endif
+@@ -145,6 +162,9 @@
+ 		catch (...)
+ 		{
+ 			MC_LOG_WARN("resources", "Failed to add %s%s\n", s.c_str(), name.c_str());
++#if defined(__ANDROID__)
++			++s_dbgFailed;
++#endif
+ 		}
+ 	}
+ 	return true;
+@@ -153,11 +173,25 @@
+ void ThreadDownloadResources::loadResource(const std::string &file, const std::string &s)
+ {
+ 	if (s.empty() && AssetPak::mounted() && loadPakResources("resources", ""))
++	{
++#if defined(__ANDROID__)
++		// The pak's audio can be in console formats (.adp) that the PC mixer ignores, while the
++		// .ogg files sit in a loose resources/ folder: read that one too.
++		if (closing)
++			return;
++#else
+ 		return;
++#endif
++	}
+ 
+ 	std::vector<std::string> entries;
+ 	if (!PlatformStorage::listPathEntries(file, entries))
++	{
++#if defined(__ANDROID__)
++		std::fprintf(stderr, "[res] cannot list folder %s\n", file.c_str());
++#endif
+ 		return;
++	}
+ 
+ 	for (const std::string& name : entries)
+ 	{
+@@ -174,6 +208,9 @@
+ 		try
+ 		{
+ 			mc->installResource(s + name, path);
++#if defined(__ANDROID__)
++			++s_dbgInstalled;
++#endif
+ #if PLATFORM_LOCAL_RESOURCES_ONLY
+ 			++s_localResourceCount;
+ #endif
+diff -ruN orig/src/net/minecraft/src/World.cpp new/src/net/minecraft/src/World.cpp
+--- orig/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.620793427 +0000
++++ new/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.854790285 +0000
+@@ -106,8 +106,8 @@
+ #include "platform/ExtendedProfiler.h"
+ #if PLATFORM_FAST_BLOCK_COLLISIONS || PLATFORM_EARLY_COLLISION_EXIT || PLATFORM_FLOAT_COLLISION_SWEEP
+ #include "platform/world/PlatformBlockCollisionSweeper.h"
+-#include "platform/world/StreamingFrameBudget.h"
+ #endif
++#include "platform/world/StreamingFrameBudget.h"
+ 
+ #if PLATFORM_BOUNDED_WORLD
+ static int_t platformFindTopSpawnBlockY(World *world, int_t x, int_t z)
+diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/WorldRenderer.h
+--- orig/src/net/minecraft/src/WorldRenderer.h	2026-09-18 19:00:01.625850278 +0000
++++ new/src/net/minecraft/src/WorldRenderer.h	2026-09-18 19:00:01.855077705 +0000
+@@ -55,13 +55,6 @@
+ #if defined(WII_PLATFORM) || defined(PS2_PLATFORM)
+ 	void renderExtraTerrainMeshes(int_t pass);
+ #endif
+-#if defined(WII_PLATFORM) || defined(PS2_PLATFORM) || PLATFORM_PC_LEGACY
+-	bool isTerrainBuildInProgress() const;
+-#ifdef PS2_PLATFORM
+-	// Drops an in-flight build and returns its staging lease. The renderer
+-	// stays dirty and restarts from scratch on a later scheduler step.
+-	void abandonTerrainBuild();
+-#endif
+ 	// A dirty mark caused by a light value change. With
+ 	// PLATFORM_COALESCE_MESH_REBUILDS an active build keeps going and is
+ 	// rebuilt once more after it completes, instead of restarting on every
+@@ -70,6 +63,13 @@
+ 	// Set by RenderGlobal for a block change next to the player; the scheduler
+ 	// runs these ahead of streaming work and to completion.
+ 	bool urgentRebuild = false;
++#if defined(WII_PLATFORM) || defined(PS2_PLATFORM) || PLATFORM_PC_LEGACY
++	bool isTerrainBuildInProgress() const;
++#ifdef PS2_PLATFORM
++	// Drops an in-flight build and returns its staging lease. The renderer
++	// stays dirty and restarts from scratch on a later scheduler step.
++	void abandonTerrainBuild();
++#endif
+ #if PLATFORM_PS2 && MC_LOG_LEVEL >= 2
+ 	// Monotonic microseconds at the edit that set urgentRebuild; the urgent lane
+ 	// logs the edit-to-publish latency against it.
+diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
+--- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
++++ new/src/pc/Main.cpp	2026-09-21 00:27:30.185288998 +0000
+@@ -1,4 +1,6 @@
++#ifndef __ANDROID__
+ #define SDL_MAIN_HANDLED
++#endif
+ #include "SDL.h"
+ 
+ #include <cctype>
+@@ -16,6 +18,22 @@
+ #include "lwjgl/GLContext.h"
+ #include "pc/render/PcRenderBackend.h"
+ 
++#if defined(__ANDROID__)
++#include <cerrno>
++#include <csignal>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cxxabi.h>
++#include <dlfcn.h>
++#include <exception>
++#include <fcntl.h>
++#include <unistd.h>
++#include <unwind.h>
++
++#include "platform/Resources.h"
++#endif
++
+ namespace
+ {
+ std::string trimUsername(std::string value)
+@@ -77,6 +95,188 @@
+ 	return 0;
+ }
+ 
++#if defined(__ANDROID__)
++// Android has no console, so a failed start looks like the app simply closing.
++// Everything the game prints goes to last_run.log; if the previous run did not
++// end with the clean-exit marker, its tail is shown in a dialog on the next start.
++int g_androidLogFd = -1;
++const char kCleanExitMarker[] = "--- clean exit ---";
++
++struct AndroidBacktrace
++{
++	void **current;
++	void **end;
++};
++
++_Unwind_Reason_Code androidUnwindCallback(struct _Unwind_Context *context, void *arg)
++{
++	AndroidBacktrace *state = static_cast<AndroidBacktrace *>(arg);
++	const uintptr_t pc = _Unwind_GetIP(context);
++	if (pc)
++	{
++		if (state->current == state->end)
++			return _URC_END_OF_STACK;
++		*state->current++ = reinterpret_cast<void *>(pc);
++	}
++	return _URC_NO_REASON;
++}
++
++// Best effort (not async-signal-safe, but the process is dying anyway): one line per frame,
++// "library+offset  function". Function names come from the dynamic symbol table.
++void androidWriteBacktrace(int fd)
++{
++	void *frames[40];
++	AndroidBacktrace state = { frames, frames + 40 };
++	_Unwind_Backtrace(androidUnwindCallback, &state);
++	const int count = static_cast<int>(state.current - frames);
++	for (int i = 0; i < count; i++)
++	{
++		Dl_info info;
++		if (dladdr(frames[i], &info) && info.dli_fbase)
++		{
++			const char *lib = info.dli_fname ? std::strrchr(info.dli_fname, '/') : nullptr;
++			lib = lib ? lib + 1 : (info.dli_fname ? info.dli_fname : "?");
++			int status = 0;
++			char *demangled = info.dli_sname ? abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status) : nullptr;
++			dprintf(fd, "  #%02d %s+0x%lx  %s\n", i, lib,
++			        static_cast<unsigned long>(reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(info.dli_fbase)),
++			        demangled ? demangled : (info.dli_sname ? info.dli_sname : "?"));
++			std::free(demangled);
++		}
++		else
++		{
++			dprintf(fd, "  #%02d %p\n", i, frames[i]);
++		}
++	}
++}
++
++void androidSignalHandler(int sig)
++{
++	const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : sig == SIGBUS ? "SIGBUS" : sig == SIGFPE ? "SIGFPE" : sig == SIGILL ? "SIGILL" : "signal";
++	char buf[80];
++	const int n = std::snprintf(buf, sizeof(buf), "\n*** CRASH: %s (%d)\n", name, sig);
++	if (g_androidLogFd >= 0 && n > 0)
++	{
++		const ssize_t ignored = write(g_androidLogFd, buf, static_cast<size_t>(n));
++		(void)ignored;
++		androidWriteBacktrace(g_androidLogFd);
++	}
++	std::signal(sig, SIG_DFL);
++	std::raise(sig);
++}
++
++std::string androidReadTail(const std::string &path, size_t maxBytes)
++{
++	std::ifstream in(path, std::ios::binary | std::ios::ate);
++	if (!in)
++		return std::string();
++	const std::streamoff size = in.tellg();
++	const std::streamoff start = size > static_cast<std::streamoff>(maxBytes) ? size - static_cast<std::streamoff>(maxBytes) : 0;
++	in.seekg(start);
++	std::string out(static_cast<size_t>(size - start), '\0');
++	in.read(&out[0], static_cast<std::streamsize>(out.size()));
++	return out;
++}
++
++void androidLogOutput(void *, int, SDL_LogPriority, const char *message)
++{
++	std::fprintf(stderr, "[SDL] %s\n", message);
++}
++
++// Lets gl4es options be tried without rebuilding: /sdcard/OptiCraft/gl4es.env (plain text,
++// one NAME=VALUE per line, only LIBGL_* names, '#' starts a comment).
++void androidApplyGlEnvFile()
++{
++	const char *candidates[] = { "/sdcard/OptiCraft/gl4es.env", "/storage/emulated/0/OptiCraft/gl4es.env" };
++	for (const char *file : candidates)
++	{
++		std::ifstream in(file);
++		if (!in)
++			continue;
++		std::string line;
++		while (std::getline(in, line))
++		{
++			while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
++				line.pop_back();
++			if (line.empty() || line[0] == '#')
++				continue;
++			const size_t eq = line.find('=');
++			if (eq == std::string::npos)
++				continue;
++			const std::string name = line.substr(0, eq);
++			const std::string value = line.substr(eq + 1);
++			if (name.compare(0, 6, "LIBGL_") != 0)
++				continue;
++			setenv(name.c_str(), value.c_str(), 1);
++			std::fprintf(stderr, "[gl4es.env] %s=%s\n", name.c_str(), value.c_str());
++		}
++		return;
++	}
++}
++
++void androidStartDiagnostics()
++{
++	// Landscape only (both directions). Without this the resizable window lets SDL pick
++	// "all orientations", which overrides the manifest.
++	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
++	const char *internalDir = SDL_AndroidGetInternalStoragePath();
++	if (!internalDir)
++		return;
++
++	// Prefer /sdcard/OptiCraft so the log can be read from a file manager right after a run;
++	// use the app's own storage when "all files access" was not granted.
++	std::string logDir = internalDir;
++	if (access("/sdcard/OptiCraft", W_OK) == 0)
++		logDir = "/sdcard/OptiCraft";
++	const std::string path = logDir + "/last_run.log";
++	const std::string previousPath = logDir + "/previous_run.log";
++
++	const std::string fullPrevious = androidReadTail(path, 1 << 20);
++	if (!fullPrevious.empty())
++	{
++		// Keep the last run readable as previous_run.log (no dialog is shown any more).
++		std::rename(path.c_str(), previousPath.c_str());
++	}
++	// gl4es: print the shader source and the real compiler error when a shader fails.
++	setenv("LIBGL_LOGSHADERERROR", "1", 1);
++	// Experiment for the first-person hand looking wrong (smooth, too dark shading): make the
++	// fixed-pipeline shaders normalise normals even when the game scaled the model.
++	setenv("LIBGL_NORMALIZE", "1", 1);
++
++	g_androidLogFd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
++	if (g_androidLogFd < 0)
++		return;
++	dup2(g_androidLogFd, 1);
++	dup2(g_androidLogFd, 2);
++	std::setvbuf(stdout, nullptr, _IONBF, 0);
++	std::setvbuf(stderr, nullptr, _IONBF, 0);
++	SDL_LogSetOutputFunction(androidLogOutput, nullptr);
++	for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL })
++		std::signal(sig, androidSignalHandler);
++	std::fprintf(stderr, "[boot] log started\n");
++	androidApplyGlEnvFile();
++}
++
++bool androidHasGameData()
++{
++	const std::filesystem::path base(PlatformResources::baseDir());
++	std::error_code ec;
++	if (std::filesystem::exists(base / "assets.pak", ec) || std::filesystem::exists(base / "assets", ec))
++		return true;
++	const std::string message =
++		"No encuentro los assets del juego.\n\nBusque en: " + base.string() +
++		"\n\nCopia las carpetas 'assets' y 'resources' (o 'assets.pak') a /sdcard/OptiCraft/ "
++		"y dale el permiso de acceso a todos los archivos, o copialas a la carpeta Android/data/org.opticraft.heritage/files/.";
++	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft", message.c_str(), nullptr);
++	std::fprintf(stderr, "[boot] no game data in %s\n%s\n", base.string().c_str(), kCleanExitMarker);
++	return false;
++}
++
++#define BOOT_LOG(text) std::fprintf(stderr, "[boot] %s\n", text)
++#else
++#define BOOT_LOG(text) ((void)0)
++#endif
++
+ std::string loadUsername()
+ {
+ 	const std::filesystem::path path =
+@@ -97,13 +297,16 @@
+ }
+ }
+ 
+-int main(int argc, char *argv[])
++int gameMain(int argc, char *argv[])
+ {
++	BOOT_LOG("SDL_Init");
+ 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER | SDL_INIT_AUDIO) < 0)
+ 		throw SDLException();
++	BOOT_LOG("SDL ready");
+ 	pcRenderBackendSetRequested(loadRenderBackendPreference());
+ 	lwjgl::GLContext::setRequestedSamples(loadOptiFineAaLevel());
+ 	lwjgl::GLContext::instantiate();
++	BOOT_LOG("GL context ready");
+ #if PLATFORM_PC_LEGACY
+ 	Tessellator::convertQuadsToTriangles = !pcRenderBackendIsDirect3D9();
+ #endif
+@@ -116,7 +319,39 @@
+ 	if (argc >= 3 && std::strlen(argv[2]) > 1)
+ 		auth = argv[2];
+ 
++	BOOT_LOG("starting game");
+ 	Minecraft::start(&username, &auth);
+ 
+ 	return 0;
+ }
++
++int main(int argc, char *argv[])
++{
++#if defined(__ANDROID__)
++	androidStartDiagnostics();
++	if (!androidHasGameData())
++		return 1;
++	try
++	{
++		const int rc = gameMain(argc, argv);
++		std::fprintf(stderr, "%s\n", kCleanExitMarker);
++		return rc;
++	}
++	catch (const std::exception &e)
++	{
++		std::fprintf(stderr, "[fatal] %s\n", e.what());
++		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: error", e.what(), nullptr);
++		std::fprintf(stderr, "%s\n", kCleanExitMarker);
++		return 1;
++	}
++	catch (...)
++	{
++		std::fprintf(stderr, "[fatal] unknown exception\n");
++		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OptiCraft: error", "Excepcion desconocida al iniciar.", nullptr);
++		std::fprintf(stderr, "%s\n", kCleanExitMarker);
++		return 1;
++	}
++#else
++	return gameMain(argc, argv);
++#endif
++}
+diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
+--- orig/src/pc/linux/java/File.cpp	2026-09-18 18:14:00.395865867 +0000
++++ new/src/pc/linux/java/File.cpp	2026-09-18 19:00:01.853534784 +0000
+@@ -23,6 +23,9 @@
+ #endif
+ 
+ #include "util/Memory.h"
++#if defined(__ANDROID__)
++#include <SDL.h>
++#endif
+ 
+ static std::string ToPath(const jstring &path)
+ {
+@@ -114,7 +117,7 @@
+      * that struct stat has a struct timespec st_mtim member. We need this
+      * check because there are some platforms that claim to be POSIX 2008
+      * compliant but which do not have st_mtim... */
+-	#if (PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime)
++	#if defined(__ANDROID__) || ((PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime))
+         return buffer.st_mtim.tv_sec * 1000LL + buffer.st_mtim.tv_nsec / 1000000LL;
+ 	#else
+ 		return buffer.st_mtime * 1000LL + buffer.st_mtimespec.tv_nsec / 1000000LL;
+@@ -235,6 +238,10 @@
+ File *File::openWorkingDirectory(const jstring &name)
+ {
+ 	// Get the home directory environment variable
++#if defined(__ANDROID__)
++	if (const char *external = SDL_AndroidGetExternalStoragePath())
++		return new File_Impl(FromPath(external) + "/" + name);
++#endif
+ 	const char *path = ::getenv("HOME");
+ 	if (path == nullptr)
+ 		return new File_Impl("");
+diff -ruN orig/src/pc/lwjgl/Display.cpp new/src/pc/lwjgl/Display.cpp
+--- orig/src/pc/lwjgl/Display.cpp	2026-09-19 18:54:06.499800985 +0000
++++ new/src/pc/lwjgl/Display.cpp	2026-09-21 07:14:24.969720464 +0000
+@@ -6,6 +6,9 @@
+ #include "lwjgl/GLContext.h"
+ #include "lwjgl/Mouse.h"
+ #include "lwjgl/Keyboard.h"
++#if defined(__ANDROID__)
++#include "lwjgl/TouchControls.h"
++#endif
+ 
+ #include "external/SDLException.h"
+ #include "pc/render/PcRenderBackend.h"
+@@ -28,6 +31,17 @@
+ // Display functions
+ void setDisplayMode(const DisplayMode &display_mode)
+ {
++#if defined(__ANDROID__)
++	// The window always covers the whole screen. SDL_SetWindowSize() would overwrite the
++	// real size Android reported with the game's default 854x480 (depending on timing),
++	// and the first frames would be laid out for the wrong size. Follow the actual window.
++	{
++		int w, h;
++		SDL_GetWindowSize(GLContext::detail::getWindow(), &w, &h);
++		current_display_mode = DisplayMode(w, h);
++		return;
++	}
++#endif
+ 	if (!display_mode.isFullscreen())
+ 	{
+ 		SDL_SetWindowSize(GLContext::detail::getWindow(), display_mode.getWidth(), display_mode.getHeight());
+@@ -129,6 +143,13 @@
+ 			case SDL_TEXTINPUT:
+ 				Keyboard::detail::pushEvent(e);
+ 				break;
++#if defined(__ANDROID__)
++			case SDL_FINGERDOWN:
++			case SDL_FINGERMOTION:
++			case SDL_FINGERUP:
++				TouchControls::handleFingerEvent(e);
++				break;
++#endif
+ 		}
+ 	}
+ 
+@@ -143,6 +164,9 @@
+ 	if (pcRenderBackendIsDirect3D9())
+ 		pcD3D9ApplyPendingResize();
+ #endif
++#if defined(__ANDROID__)
++	Keyboard::detail::flushPendingKeys();
++#endif
+ }
+ 
+ void swapBuffers()
+@@ -154,6 +178,9 @@
+ 		return;
+ 	}
+ #endif
++#if defined(__ANDROID__)
++	TouchControls::draw();
++#endif
+ 	SDL_GL_SwapWindow(GLContext::detail::getWindow());
+ }
+ 
+diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
+--- orig/src/pc/lwjgl/GLContext.cpp	2026-09-18 18:14:00.382565324 +0000
++++ new/src/pc/lwjgl/GLContext.cpp	2026-09-19 18:29:58.214814484 +0000
+@@ -13,6 +13,11 @@
+ #endif
+ 
+ #include "SDL.h"
++#if defined(__ANDROID__)
++#include <cstdio>
++#include <cstdlib>
++#include <gl4esinit.h>
++#endif
+ 
+ // #define MC_DEBUG_GL
+ 
+@@ -174,9 +179,16 @@
+ 
+ 		pcRenderBackendSetActive(PcRenderBackendType::OpenGL);
+ 
++#if defined(__ANDROID__)
++		// gl4es translates the fixed-function GL 1.x calls onto this GLES 2.0 context.
++		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
++		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
++		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
++#else
+ 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
+ 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+ 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
++#endif
+ 		SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+ 		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+ 
+@@ -224,8 +236,36 @@
+ 		if (window == nullptr || gl_context == nullptr)
+ 			throw SDLException();
+ 
++#if defined(__ANDROID__)
++		// gl4es is linked statically with NOX11/NOEGL: SDL owns the EGL context,
++		// gl4es only needs to know how to look up the GLES entry points.
++		// gl4es' hardware probe creates its own EGL context on the default display,
++		// unbinds it and calls eglTerminate() - which invalidates SDL's context and turns every
++		// later GL call into a silent no-op. Skip the probe (ES2 defaults are used instead).
++		setenv("LIBGL_NOTEST", "1", 1);
++		set_getprocaddress(SDL_GL_GetProcAddress);
++		initialize_gl4es();
++		if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(gl4es_GetProcAddress)))
++			throw std::runtime_error("Failed to load glad");
++		{
++			// What the real driver reports, before gl4es answers for it (goes to last_run.log).
++			typedef const unsigned char *(*RawGetString)(unsigned int);
++			RawGetString rawGetString = reinterpret_cast<RawGetString>(SDL_GL_GetProcAddress("glGetString"));
++			if (rawGetString)
++			{
++				std::fprintf(stderr, "[gl] driver GL_VERSION: %s\n", reinterpret_cast<const char *>(rawGetString(0x1F02)));
++				std::fprintf(stderr, "[gl] driver GL_RENDERER: %s\n", reinterpret_cast<const char *>(rawGetString(0x1F01)));
++				std::fprintf(stderr, "[gl] driver GLSL: %s\n", reinterpret_cast<const char *>(rawGetString(0x8B8C)));
++			}
++			else
++			{
++				std::fprintf(stderr, "[gl] SDL_GL_GetProcAddress(glGetString) returned null\n");
++			}
++		}
++#else
+ 		if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(SDL_GL_GetProcAddress)))
+ 			throw std::runtime_error("Failed to load glad");
++#endif
+ 
+ 		SDL_GL_SetSwapInterval(0);
+ 
+diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
+--- orig/src/pc/lwjgl/Keyboard.cpp	2026-09-20 03:54:15.218832574 +0000
++++ new/src/pc/lwjgl/Keyboard.cpp	2026-09-21 23:25:41.896146043 +0000
+@@ -1,12 +1,18 @@
+ ﻿#include "lwjgl/Keyboard.h"
+ 
++#include <algorithm>
+ #include <queue>
++#include <vector>
+ #include <locale>
+ #include <codecvt>
+ 
+ #include "external/SDLException.h"
+ 
+ #include "SDL_events.h"
++#if defined(__ANDROID__)
++#include <cstdio>
++#include "SDL_keyboard.h"
++#endif
+ 
+ namespace lwjgl
+ {
+@@ -294,6 +300,11 @@
+ 	}
+ }
+ 
++#if defined(__ANDROID__)
++// Keys held by the on-screen controls (index = LWJGL key code).
++static bool virtual_key_state[256] = {};
++#endif
++
+ namespace detail
+ {
+ 
+@@ -311,6 +322,15 @@
+ static bool has_retained_event = false;
+ static Event event_retained = {};
+ 
++#if defined(__ANDROID__)
++// Printable key events are held back while text input is on: soft keyboards send them as
++// down, up, then the text (which must win), and some send only the keys.
++static std::vector<SDL_Event> pending_keys;
++static std::vector<SDL_Keycode> discarded_downs; // key-ups to drop (hardware keyboards: down, text, up)
++static int_t last_lwjgl_key_before_text = 0;
++static std::vector<int_t> matched_lwjgl_keys; // one entry per completed down/up pair, in order
++#endif
++
+ static void flushRetained()
+ {
+ 	if (!has_retained_event)
+@@ -333,8 +353,15 @@
+ 
+ static void handleCharacter(int_t character)
+ {
++#if defined(__ANDROID__)
++	// A character belongs to a key-down. Soft keyboards send key down, key up, then the text, so
++	// the retained event may be a key-up (the game ignores those and the letter would be lost).
++	if (has_retained_event && (!event_retained.down || event_retained.character != 0))
++		flushRetained();
++#else
+ 	if (has_retained_event && event_retained.character != 0)
+ 		flushRetained();
++#endif
+ 	if (!has_retained_event)
+ 		event_queue.push({KEY_NONE, character, false, true});
+ 	else
+@@ -343,6 +370,76 @@
+ 
+ void pushEvent(const SDL_Event &e)
+ {
++#if defined(__ANDROID__)
++	{
++		static int dbgInputEvents = 0;
++		if (dbgInputEvents < 60)
++		{
++			++dbgInputEvents;
++			if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
++				std::fprintf(stderr, "[input] key %s sym=%d scancode=%d repeat=%d\n", e.key.state == SDL_PRESSED ? "down" : "up",
++				             (int)e.key.keysym.sym, (int)e.key.keysym.scancode, (int)e.key.repeat);
++			else
++				std::fprintf(stderr, "[input] text '%s'\n", e.text.text);
++		}
++	}
++#endif
++#if defined(__ANDROID__)
++	if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
++	{
++		const SDL_Keycode sym = e.key.keysym.sym;
++		const bool printable = sym >= 32 && sym <= 126 && (e.key.keysym.mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) == 0;
++		if (SDL_IsTextInputActive() == SDL_TRUE && printable)
++		{
++			if (e.type == SDL_KEYUP)
++			{
++				auto it = std::find(discarded_downs.begin(), discarded_downs.end(), sym);
++				if (it != discarded_downs.end())
++				{
++					discarded_downs.erase(it);
++					return;
++				}
++			}
++			pending_keys.push_back(e);
++			return;
++		}
++		flushPendingKeys();
++		handleKey(keySDLToLWJGL(sym), e.key.repeat, e.key.state == SDL_PRESSED);
++		return;
++	}
++	// Text arrived: match each finished down/up pair among the held-back keys to a character,
++	// in order (a soft keyboard's own composing keys, e.g. Shift, never get an up here and are
++	// dropped instead of matched). A key with no matching up (rare, hardware race) is delivered
++	// on its own further down via flushPendingKeys.
++	for (size_t i = 0; i < pending_keys.size(); i++)
++	{
++		if (pending_keys[i].type != SDL_KEYDOWN)
++			continue;
++		bool hasUp = false;
++		for (size_t j = i + 1; j < pending_keys.size(); j++)
++			if (pending_keys[j].type == SDL_KEYUP && pending_keys[j].key.keysym.sym == pending_keys[i].key.keysym.sym)
++				hasUp = true;
++		if (hasUp)
++			matched_lwjgl_keys.push_back(keySDLToLWJGL(pending_keys[i].key.keysym.sym));
++		else
++			discarded_downs.push_back(pending_keys[i].key.keysym.sym);
++	}
++	pending_keys.clear();
++	{
++		std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> conv;
++		std::u32string utf32 = conv.from_bytes(e.text.text);
++		for (char32_t c : utf32)
++		{
++			const int_t key = !matched_lwjgl_keys.empty() ? matched_lwjgl_keys.front() : KEY_NONE;
++			if (!matched_lwjgl_keys.empty())
++				matched_lwjgl_keys.erase(matched_lwjgl_keys.begin());
++			flushRetained();
++			has_retained_event = true;
++			event_retained = { key, static_cast<int_t>(c), false, true };
++		}
++	}
++	return;
++#endif
+ 	if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
+ 	{
+ 		handleKey(keySDLToLWJGL(e.key.keysym.sym), e.key.repeat, e.key.state == SDL_PRESSED);
+@@ -357,6 +454,36 @@
+ 	}
+ }
+ 
++#if defined(__ANDROID__)
++void flushPendingKeys()
++{
++	// No text came for these keys (some keyboards only send key events): type the characters
++	// from the keys themselves.
++	std::vector<SDL_Event> keys;
++	keys.swap(pending_keys);
++	for (const SDL_Event &e : keys)
++	{
++		const SDL_Keycode sym = e.key.keysym.sym;
++		handleKey(keySDLToLWJGL(sym), e.key.repeat, e.key.state == SDL_PRESSED);
++		if (e.type == SDL_KEYDOWN)
++		{
++			int_t ch = static_cast<int_t>(sym);
++			if (ch >= 'a' && ch <= 'z' && (e.key.keysym.mod & (KMOD_SHIFT | KMOD_CAPS)) != 0)
++				ch = ch - 'a' + 'A';
++			handleCharacter(ch);
++		}
++	}
++}
++
++void pushVirtualKey(int lwjglKey, bool down)
++{
++	if (lwjglKey <= 0 || lwjglKey >= 256)
++		return;
++	virtual_key_state[lwjglKey] = down;
++	handleKey(lwjglKey, false, down);
++}
++#endif
++
+ }
+ 
+ // Keyboard functions
+@@ -401,6 +528,23 @@
+ 	allow_repeat_events = repeat;
+ }
+ 
++#if defined(__ANDROID__)
++void setTextInputActive(bool active)
++{
++	std::fprintf(stderr, "[input] text input %s\n", active ? "start" : "stop");
++	if (active)
++	{
++		SDL_StartTextInput();
++	}
++	else
++	{
++		detail::flushPendingKeys();
++		detail::discarded_downs.clear();
++		SDL_StopTextInput();
++	}
++}
++#endif
++
+ bool areRepeatEventsEnabled()
+ {
+ 	return allow_repeat_events;
+@@ -427,6 +571,10 @@
+ 
+ bool isKeyDown(int_t key)
+ {
++#if defined(__ANDROID__)
++	if (key > 0 && key < 256 && virtual_key_state[key])
++		return true;
++#endif
+ 	if (keyboard_state == nullptr)
+ 	{
+ 		keyboard_state = SDL_GetKeyboardState(&keyboard_state_size);
+diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
+--- orig/src/pc/lwjgl/Keyboard.h	2026-09-20 03:54:15.213390515 +0000
++++ new/src/pc/lwjgl/Keyboard.h	2026-09-21 07:14:24.969268478 +0000
+@@ -27,6 +27,13 @@
+ void pushEvent(const SDL_Event &e);
+ #endif
+ 
++#if defined(__ANDROID__)
++// On-screen touch controls (TouchControls.cpp): a key event plus polled state.
++void pushVirtualKey(int lwjglKey, bool down);
++// Delivers printable key events that were held back waiting for their text (see pushEvent).
++void flushPendingKeys();
++#endif
++
+ }
+ 
+ // Key enum
+@@ -186,6 +193,11 @@
+ // Event handling
+ bool next();
+ void enableRepeatEvents(bool repeat);
++
++#if defined(__ANDROID__)
++// Shows (true) or hides (false) the on-screen keyboard and switches SDL text input on/off.
++void setTextInputActive(bool active);
++#endif
+ bool areRepeatEventsEnabled();
+ 
+ char_t getEventCharacter();
+diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
+--- orig/src/pc/lwjgl/Mouse.cpp	2026-09-20 03:54:15.207995706 +0000
++++ new/src/pc/lwjgl/Mouse.cpp	2026-09-20 03:54:40.562983846 +0000
+@@ -10,6 +10,11 @@
+ #include "SDL_video.h"
+ #include "SDL_mouse.h"
+ 
++#if defined(__ANDROID__)
++#include "SDL_hints.h"
++#include "lwjgl/TouchControls.h"
++#endif
++
+ namespace lwjgl
+ {
+ namespace Mouse
+@@ -19,6 +24,11 @@
+ static int_t staging_dy = 0;
+ static int_t staging_dz = 0;
+ 
++#if defined(__ANDROID__)
++// Buttons held by the on-screen controls (bit = LWJGL button index).
++static unsigned virtual_button_mask = 0;
++#endif
++
+ // SDL orders the first three buttons as left, middle, right (1, 2, 3),
+ // while LWJGL orders them as left, right, middle (0, 1, 2).
+ static int_t buttonSDLToLWJGL(Uint8 button)
+@@ -82,6 +92,31 @@
+ 	}
+ }
+ 
++#if defined(__ANDROID__)
++void pushVirtualButton(int button, bool down)
++{
++	if (button < 0 || button > 7)
++		return;
++	if (down)
++		virtual_button_mask |= 1u << button;
++	else
++		virtual_button_mask &= ~(1u << button);
++	event_queue.emplace(static_cast<Sint8>(button), static_cast<Sint8>(down ? 1 : 0), Display::getWidth() / 2, Display::getHeight() / 2, 0, 0, 0);
++}
++
++void pushVirtualMotion(int dx, int dy)
++{
++	staging_dx += dx;
++	staging_dy -= dy;
++	event_queue.emplace(-1, 0, Display::getWidth() / 2, Display::getHeight() / 2, dx, -dy, 0);
++}
++
++void pushVirtualWheel(int direction)
++{
++	event_queue.emplace(-1, 0, Display::getWidth() / 2, Display::getHeight() / 2, 0, 0, direction);
++}
++#endif
++
+ }
+ 
+ void setCursorPosition(int_t x, int_t y)
+@@ -181,6 +216,10 @@
+ 
+ bool isButtonDown(int_t button)
+ {
++#if defined(__ANDROID__)
++	if (button >= 0 && button <= 7 && (virtual_button_mask & (1u << button)) != 0)
++		return true;
++#endif
+ 	Uint8 sdlButton = buttonLWJGLToSDL(button);
+ 	return sdlButton != 0 && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(sdlButton)) != 0;
+ }
+@@ -201,6 +240,9 @@
+ 		throw SDLException();
+ 	SDL_SetRelativeMouseMode(grabbed ? SDL_TRUE : SDL_FALSE);
+ 	clearDeltas();
++#if defined(__ANDROID__)
++	TouchControls::onGrabChanged(grabbed);
++#endif
+ 	// SDL_CaptureMouse(grabbed ? SDL_TRUE : SDL_FALSE);
+ 	// SDL_SetWindowMouseGrab(GLContext::detail::getWindow(), grabbed ? SDL_TRUE : SDL_FALSE);
+ }
+diff -ruN orig/src/pc/lwjgl/Mouse.h new/src/pc/lwjgl/Mouse.h
+--- orig/src/pc/lwjgl/Mouse.h	2026-09-20 03:54:15.200623310 +0000
++++ new/src/pc/lwjgl/Mouse.h	2026-09-20 03:54:40.562843058 +0000
+@@ -25,6 +25,14 @@
+ void pushEvent(const SDL_Event &e);
+ #endif
+ 
++#if defined(__ANDROID__)
++// On-screen touch controls (TouchControls.cpp) drive the game through these.
++// dy is in screen pixels, positive = down.
++void pushVirtualButton(int button, bool down);
++void pushVirtualMotion(int dx, int dy);
++void pushVirtualWheel(int direction);
++#endif
++
+ }
+ 
+ void setCursorPosition(int_t x, int_t y);
+diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
+--- orig/src/pc/lwjgl/TouchControls.cpp	1970-01-01 00:00:00.000000000 +0000
++++ new/src/pc/lwjgl/TouchControls.cpp	2026-09-21 06:52:02.930988871 +0000
+@@ -0,0 +1,535 @@
++#if defined(__ANDROID__)
++
++#include "lwjgl/TouchControls.h"
++
++#include <cmath>
++#include <map>
++
++#include <glad/glad.h>
++
++#include "SDL.h"
++
++#include "lwjgl/Display.h"
++#include "lwjgl/Keyboard.h"
++#include "lwjgl/Mouse.h"
++
++namespace lwjgl
++{
++namespace TouchControls
++{
++namespace
++{
++
++// ---------------------------------------------------------------- layout
++
++enum Action
++{
++	ActJump,
++	ActAttack,
++	ActUse,
++	ActSneak,
++	ActInventory,
++	ActPause,
++	ActPrev,
++	ActNext,
++	ActDebug,
++	ActKeyboard,
++	ActCount
++};
++
++const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3", "KB" };
++
++// Camera speed for dragging: pixels of finger travel -> mouse counts.
++const float kLookScale = 0.9f;
++
++struct Layout
++{
++	float u; // one tenth of the screen height
++	float cx[ActCount], cy[ActCount], r[ActCount];
++	float joyX, joyY, joyR;
++};
++
++Layout makeLayout()
++{
++	Layout L;
++	const float W = static_cast<float>(Display::getWidth());
++	const float H = static_cast<float>(Display::getHeight());
++	const float u = H * 0.1f;
++	L.u = u;
++	auto set = [&L](int a, float x, float y, float r)
++	{
++		L.cx[a] = x;
++		L.cy[a] = y;
++		L.r[a] = r;
++	};
++	set(ActJump, W - 2.0f * u, H - 2.2f * u, 1.25f * u);
++	set(ActAttack, W - 4.6f * u, H - 1.5f * u, 1.0f * u);
++	set(ActUse, W - 2.0f * u, H - 4.9f * u, 1.0f * u);
++	set(ActSneak, W - 4.8f * u, H - 3.9f * u, 1.0f * u);
++	set(ActInventory, W - 0.9f * u, 0.9f * u, 0.7f * u);
++	set(ActPause, 0.9f * u, 0.9f * u, 0.7f * u);
++	set(ActPrev, W * 0.5f - 4.6f * u, H - 0.9f * u, 0.6f * u);
++	set(ActNext, W * 0.5f + 4.6f * u, H - 0.9f * u, 0.6f * u);
++	set(ActDebug, 2.6f * u, 0.9f * u, 0.7f * u);
++	set(ActKeyboard, 4.3f * u, 0.9f * u, 0.7f * u);
++	L.joyX = 3.2f * u;
++	L.joyY = H - 3.2f * u;
++	L.joyR = 2.6f * u;
++	return L;
++}
++
++bool hitButton(const Layout &L, int a, float x, float y)
++{
++	const float dx = x - L.cx[a];
++	const float dy = y - L.cy[a];
++	const float r = L.r[a] * 1.15f;
++	return dx * dx + dy * dy <= r * r;
++}
++
++// ---------------------------------------------------------------- state
++
++struct Finger
++{
++	enum Kind
++	{
++		Button,
++		Joystick,
++		Look
++	};
++	Kind kind;
++	int index; // Action for buttons
++};
++
++std::map<SDL_FingerID, Finger> g_fingers;
++bool g_held[ActCount] = {};
++bool g_joyKey[4] = {}; // forward, left, back, right
++float g_thumbX = 0.0f;
++float g_thumbY = 0.0f;
++bool g_joyActive = false;
++float g_lookRemX = 0.0f;
++float g_lookRemY = 0.0f;
++
++const int kJoyKeys[4] = { Keyboard::KEY_W, Keyboard::KEY_A, Keyboard::KEY_S, Keyboard::KEY_D };
++
++void setActionState(int a, bool down)
++{
++	switch (a)
++	{
++		case ActJump:      Keyboard::detail::pushVirtualKey(Keyboard::KEY_SPACE, down); break;
++		case ActAttack:    Mouse::detail::pushVirtualButton(0, down); break;
++		case ActUse:       Mouse::detail::pushVirtualButton(1, down); break;
++		case ActInventory: Keyboard::detail::pushVirtualKey(Keyboard::KEY_E, down); break;
++		case ActPause:     Keyboard::detail::pushVirtualKey(Keyboard::KEY_ESCAPE, down); break;
++		case ActDebug:     Keyboard::detail::pushVirtualKey(Keyboard::KEY_F3, down); break;
++		default: break;
++	}
++	g_held[a] = down;
++}
++
++void pressButton(int a)
++{
++	if (a == ActSneak)
++	{
++		// Toggle: tap once to sneak, tap again to stop.
++		g_held[a] = !g_held[a];
++		Keyboard::detail::pushVirtualKey(Keyboard::KEY_LSHIFT, g_held[a]);
++	}
++	else if (a == ActKeyboard)
++	{
++		Keyboard::setTextInputActive(true);
++		g_held[a] = true;
++	}
++	else if (a == ActPrev)
++	{
++		Mouse::detail::pushVirtualWheel(1);
++		g_held[a] = true;
++	}
++	else if (a == ActNext)
++	{
++		Mouse::detail::pushVirtualWheel(-1);
++		g_held[a] = true;
++	}
++	else
++	{
++		setActionState(a, true);
++	}
++}
++
++void releaseButton(int a)
++{
++	if (a == ActSneak)
++		return;
++	if (a == ActPrev || a == ActNext || a == ActKeyboard)
++		g_held[a] = false;
++	else
++		setActionState(a, false);
++}
++
++void updateJoystick(const Layout &L, float x, float y)
++{
++	float dx = x - L.joyX;
++	float dy = y - L.joyY;
++	const float dead = L.joyR * 0.28f;
++	const bool want[4] = { dy < -dead, dx < -dead, dy > dead, dx > dead };
++	for (int i = 0; i < 4; i++)
++	{
++		if (want[i] != g_joyKey[i])
++		{
++			g_joyKey[i] = want[i];
++			Keyboard::detail::pushVirtualKey(kJoyKeys[i], want[i]);
++		}
++	}
++	const float len = std::sqrt(dx * dx + dy * dy);
++	const float maxLen = L.joyR * 0.75f;
++	if (len > maxLen)
++	{
++		dx *= maxLen / len;
++		dy *= maxLen / len;
++	}
++	g_thumbX = dx;
++	g_thumbY = dy;
++}
++
++void releaseJoystick()
++{
++	for (int i = 0; i < 4; i++)
++	{
++		if (g_joyKey[i])
++			Keyboard::detail::pushVirtualKey(kJoyKeys[i], false);
++		g_joyKey[i] = false;
++	}
++	g_joyActive = false;
++	g_thumbX = 0.0f;
++	g_thumbY = 0.0f;
++}
++
++void releaseAll()
++{
++	for (int a = 0; a < ActCount; a++)
++	{
++		if (!g_held[a])
++			continue;
++		if (a == ActSneak)
++		{
++			Keyboard::detail::pushVirtualKey(Keyboard::KEY_LSHIFT, false);
++			g_held[a] = false;
++		}
++		else
++		{
++			releaseButton(a);
++		}
++	}
++	releaseJoystick();
++	g_fingers.clear();
++	g_lookRemX = 0.0f;
++	g_lookRemY = 0.0f;
++}
++
++} // namespace
++
++// ---------------------------------------------------------------- events
++
++void handleFingerEvent(const SDL_Event &e)
++{
++	const float W = static_cast<float>(Display::getWidth());
++	const float H = static_cast<float>(Display::getHeight());
++	if (W <= 0.0f || H <= 0.0f)
++		return;
++
++	const SDL_FingerID id = e.tfinger.fingerId;
++	const float px = e.tfinger.x * W;
++	const float py = e.tfinger.y * H;
++	const bool playing = Mouse::isGrabbed();
++	const Layout L = makeLayout();
++
++	if (e.type == SDL_FINGERDOWN)
++	{
++		if (!playing)
++		{
++			// A menu is open: touches act as the mouse; only the ESC button is ours.
++			const int menuButtons[2] = { ActPause, ActKeyboard };
++			for (int a : menuButtons)
++			{
++				if (hitButton(L, a, px, py))
++				{
++					g_fingers[id] = { Finger::Button, a };
++					pressButton(a);
++					break;
++				}
++			}
++			return;
++		}
++		for (int a = 0; a < ActCount; a++)
++		{
++			if (hitButton(L, a, px, py))
++			{
++				g_fingers[id] = { Finger::Button, a };
++				pressButton(a);
++				return;
++			}
++		}
++		const float jx = px - L.joyX;
++		const float jy = py - L.joyY;
++		if (!g_joyActive && jx * jx + jy * jy <= L.joyR * L.joyR)
++		{
++			g_joyActive = true;
++			g_fingers[id] = { Finger::Joystick, 0 };
++			updateJoystick(L, px, py);
++			return;
++		}
++		g_fingers[id] = { Finger::Look, 0 };
++	}
++	else if (e.type == SDL_FINGERMOTION)
++	{
++		auto it = g_fingers.find(id);
++		if (it == g_fingers.end())
++			return;
++		if (it->second.kind == Finger::Joystick)
++		{
++			updateJoystick(L, px, py);
++		}
++		else if (it->second.kind == Finger::Look)
++		{
++			g_lookRemX += e.tfinger.dx * W * kLookScale;
++			g_lookRemY += e.tfinger.dy * H * kLookScale;
++			const int ix = static_cast<int>(g_lookRemX);
++			const int iy = static_cast<int>(g_lookRemY);
++			g_lookRemX -= static_cast<float>(ix);
++			g_lookRemY -= static_cast<float>(iy);
++			if (ix != 0 || iy != 0)
++				Mouse::detail::pushVirtualMotion(ix, iy);
++		}
++	}
++	else if (e.type == SDL_FINGERUP)
++	{
++		auto it = g_fingers.find(id);
++		if (it == g_fingers.end())
++			return;
++		if (it->second.kind == Finger::Button)
++			releaseButton(it->second.index);
++		else if (it->second.kind == Finger::Joystick)
++			releaseJoystick();
++		g_fingers.erase(it);
++	}
++}
++
++void onGrabChanged(bool grabbed)
++{
++	releaseAll();
++	// While playing, touches must not also turn into mouse clicks and motion.
++	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, grabbed ? "0" : "1");
++}
++
++// ---------------------------------------------------------------- drawing
++
++namespace
++{
++
++struct Glyph
++{
++	char c;
++	unsigned char rows[7];
++};
++
++const Glyph kGlyphs[] = {
++	{ 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } },
++	{ 'B', { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E } },
++	{ 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } },
++	{ 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } },
++	{ 'F', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 } },
++	{ '3', { 0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E } },
++	{ 'H', { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } },
++	{ 'I', { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E } },
++	{ 'J', { 0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C } },
++	{ 'K', { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 } },
++	{ 'M', { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 } },
++	{ 'N', { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 } },
++	{ 'P', { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 } },
++	{ 'S', { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E } },
++	{ 'T', { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 } },
++	{ 'U', { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E } },
++	{ 'V', { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 } },
++	{ '<', { 0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02 } },
++	{ '>', { 0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08 } },
++};
++
++const Glyph *findGlyph(char c)
++{
++	for (const Glyph &g : kGlyphs)
++		if (g.c == c)
++			return &g;
++	return nullptr;
++}
++
++void fillCircle(float cx, float cy, float r)
++{
++	const int segments = 28;
++	glBegin(GL_TRIANGLES);
++	for (int i = 0; i < segments; i++)
++	{
++		const float a0 = 6.2831853f * static_cast<float>(i) / segments;
++		const float a1 = 6.2831853f * static_cast<float>(i + 1) / segments;
++		glVertex2f(cx, cy);
++		glVertex2f(cx + std::cos(a0) * r, cy + std::sin(a0) * r);
++		glVertex2f(cx + std::cos(a1) * r, cy + std::sin(a1) * r);
++	}
++	glEnd();
++}
++
++void ring(float cx, float cy, float r, float thickness)
++{
++	const int segments = 28;
++	const float inner = r - thickness;
++	glBegin(GL_QUADS);
++	for (int i = 0; i < segments; i++)
++	{
++		const float a0 = 6.2831853f * static_cast<float>(i) / segments;
++		const float a1 = 6.2831853f * static_cast<float>(i + 1) / segments;
++		glVertex2f(cx + std::cos(a0) * r, cy + std::sin(a0) * r);
++		glVertex2f(cx + std::cos(a1) * r, cy + std::sin(a1) * r);
++		glVertex2f(cx + std::cos(a1) * inner, cy + std::sin(a1) * inner);
++		glVertex2f(cx + std::cos(a0) * inner, cy + std::sin(a0) * inner);
++	}
++	glEnd();
++}
++
++void triangle(float x1, float y1, float x2, float y2, float x3, float y3)
++{
++	glBegin(GL_TRIANGLES);
++	glVertex2f(x1, y1);
++	glVertex2f(x2, y2);
++	glVertex2f(x3, y3);
++	glEnd();
++}
++
++void drawLabel(const char *label, float cx, float cy, float r)
++{
++	int n = 0;
++	while (label[n])
++		n++;
++	const int cellsWide = n * 5 + (n - 1);
++	const float byWidth = (r * 1.5f) / static_cast<float>(cellsWide);
++	const float byHeight = (r * 0.9f) / 7.0f;
++	float cell = std::floor(byWidth < byHeight ? byWidth : byHeight);
++	if (cell < 2.0f)
++		cell = 2.0f;
++	const float x0 = cx - cell * static_cast<float>(cellsWide) * 0.5f;
++	const float y0 = cy - cell * 3.5f;
++	glBegin(GL_QUADS);
++	for (int i = 0; i < n; i++)
++	{
++		const Glyph *g = findGlyph(label[i]);
++		if (!g)
++			continue;
++		const float gx = x0 + cell * static_cast<float>(i * 6);
++		for (int row = 0; row < 7; row++)
++		{
++			for (int col = 0; col < 5; col++)
++			{
++				if (!(g->rows[row] & (0x10 >> col)))
++					continue;
++				const float x = gx + cell * static_cast<float>(col);
++				const float y = y0 + cell * static_cast<float>(row);
++				glVertex2f(x, y);
++				glVertex2f(x + cell, y);
++				glVertex2f(x + cell, y + cell);
++				glVertex2f(x, y + cell);
++			}
++		}
++	}
++	glEnd();
++}
++
++void drawButton(const Layout &L, int a)
++{
++	const float cx = L.cx[a];
++	const float cy = L.cy[a];
++	const float r = L.r[a];
++	if (g_held[a])
++		glColor4f(1.0f, 1.0f, 1.0f, 0.40f);
++	else
++		glColor4f(0.0f, 0.0f, 0.0f, 0.35f);
++	fillCircle(cx, cy, r);
++	glColor4f(1.0f, 1.0f, 1.0f, 0.55f);
++	ring(cx, cy, r, r * 0.06f);
++	glColor4f(1.0f, 1.0f, 1.0f, 0.90f);
++	drawLabel(kLabels[a], cx, cy, r);
++}
++
++void drawJoystick(const Layout &L)
++{
++	glColor4f(0.0f, 0.0f, 0.0f, 0.22f);
++	fillCircle(L.joyX, L.joyY, L.joyR);
++	glColor4f(1.0f, 1.0f, 1.0f, 0.40f);
++	ring(L.joyX, L.joyY, L.joyR, L.joyR * 0.03f);
++
++	// Direction arrows.
++	const float s = L.u * 0.35f;
++	const float d = L.joyR * 0.72f;
++	glColor4f(1.0f, 1.0f, 1.0f, g_joyKey[0] ? 0.9f : 0.45f);
++	triangle(L.joyX, L.joyY - d - s, L.joyX - s, L.joyY - d + s, L.joyX + s, L.joyY - d + s);
++	glColor4f(1.0f, 1.0f, 1.0f, g_joyKey[2] ? 0.9f : 0.45f);
++	triangle(L.joyX, L.joyY + d + s, L.joyX - s, L.joyY + d - s, L.joyX + s, L.joyY + d - s);
++	glColor4f(1.0f, 1.0f, 1.0f, g_joyKey[1] ? 0.9f : 0.45f);
++	triangle(L.joyX - d - s, L.joyY, L.joyX - d + s, L.joyY - s, L.joyX - d + s, L.joyY + s);
++	glColor4f(1.0f, 1.0f, 1.0f, g_joyKey[3] ? 0.9f : 0.45f);
++	triangle(L.joyX + d + s, L.joyY, L.joyX + d - s, L.joyY - s, L.joyX + d - s, L.joyY + s);
++
++	// Thumb.
++	glColor4f(1.0f, 1.0f, 1.0f, g_joyActive ? 0.40f : 0.22f);
++	fillCircle(L.joyX + g_thumbX, L.joyY + g_thumbY, L.u * 0.9f);
++}
++
++} // namespace
++
++void draw()
++{
++	const int W = Display::getWidth();
++	const int H = Display::getHeight();
++	if (W <= 0 || H <= 0)
++		return;
++	const bool playing = Mouse::isGrabbed();
++	const Layout L = makeLayout();
++
++	glPushAttrib(GL_ALL_ATTRIB_BITS);
++	glViewport(0, 0, W, H);
++	glMatrixMode(GL_PROJECTION);
++	glPushMatrix();
++	glLoadIdentity();
++	glOrtho(0.0, static_cast<double>(W), static_cast<double>(H), 0.0, -1.0, 1.0);
++	glMatrixMode(GL_MODELVIEW);
++	glPushMatrix();
++	glLoadIdentity();
++
++	glDisable(GL_TEXTURE_2D);
++	glDisable(GL_LIGHTING);
++	glDisable(GL_FOG);
++	glDisable(GL_DEPTH_TEST);
++	glDisable(GL_ALPHA_TEST);
++	glDisable(GL_CULL_FACE);
++	glEnable(GL_BLEND);
++	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
++
++	if (playing)
++	{
++		drawJoystick(L);
++		for (int a = 0; a < ActCount; a++)
++			drawButton(L, a);
++	}
++	else
++	{
++		drawButton(L, ActPause);
++		drawButton(L, ActKeyboard);
++	}
++
++	glMatrixMode(GL_PROJECTION);
++	glPopMatrix();
++	glMatrixMode(GL_MODELVIEW);
++	glPopMatrix();
++	glPopAttrib();
++}
++
++}
++}
++
++#endif
+diff -ruN orig/src/pc/lwjgl/TouchControls.h new/src/pc/lwjgl/TouchControls.h
+--- orig/src/pc/lwjgl/TouchControls.h	1970-01-01 00:00:00.000000000 +0000
++++ new/src/pc/lwjgl/TouchControls.h	2026-09-20 03:54:15.220895030 +0000
+@@ -0,0 +1,29 @@
++#pragma once
++
++#if defined(__ANDROID__)
++
++#include "SDL_events.h"
++
++namespace lwjgl
++{
++namespace TouchControls
++{
++
++// Temporary on-screen controls for Android. While the mouse is grabbed (playing) they
++// give a movement pad, look-by-dragging and a few buttons; while a menu is open the
++// touch screen keeps acting as a mouse and only the ESC button is active.
++
++// Feeds SDL_FINGERDOWN / SDL_FINGERMOTION / SDL_FINGERUP events.
++void handleFingerEvent(const SDL_Event &e);
++
++// Mouse::setGrabbed() calls this: releases every virtual key/button and switches SDL's
++// touch-to-mouse emulation off while playing (on again for menus).
++void onGrabChanged(bool grabbed);
++
++// Draws the overlay; called right before the buffers are swapped.
++void draw();
++
++}
++}
++
++#endif
+diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenGlRenderBackend.cpp
+--- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:00.387082415 +0000
++++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-21 00:34:00.657790642 +0000
+@@ -14,6 +14,134 @@
+ #include <cstdio>
+ #include <cstring>
+ 
++#if defined(__ANDROID__)
++// Diagnostic build: report the first GL errors together with the call that raised them
++// (goes to last_run.log). Stops checking after 40 errors or 60000 calls to stay cheap.
++static int pcGlTraceReported = 0;
++static int pcGlTraceChecks = 0;
++static int pcGlTraceSeenLine[64];
++static GLenum pcGlTraceSeenError[64];
++static void pcGlTraceCheck(const char *call, int line)
++{
++	if (pcGlTraceReported >= 64 || ++pcGlTraceChecks > 200000)
++		return;
++	for (GLenum e = glad_glGetError(); e != GL_NO_ERROR && pcGlTraceReported < 64; e = glad_glGetError())
++	{
++		bool seen = false; // report each (call site, error) only once
++		for (int i = 0; i < pcGlTraceReported; ++i)
++			if (pcGlTraceSeenLine[i] == line && pcGlTraceSeenError[i] == e)
++				seen = true;
++		if (seen)
++			continue;
++		pcGlTraceSeenLine[pcGlTraceReported] = line;
++		pcGlTraceSeenError[pcGlTraceReported] = e;
++		++pcGlTraceReported;
++		std::fprintf(stderr, "[glerr] 0x%04x after %s (PcOpenGlRenderBackend.cpp:%d)\n", e, call, line);
++	}
++}
++#define PC_GL_TRACED(function, ...) (glad_##function(__VA_ARGS__), pcGlTraceCheck(#function "(" #__VA_ARGS__ ")", __LINE__))
++#undef glEnable
++#define glEnable(...) PC_GL_TRACED(glEnable, __VA_ARGS__)
++#undef glDisable
++#define glDisable(...) PC_GL_TRACED(glDisable, __VA_ARGS__)
++#undef glEnableClientState
++#define glEnableClientState(...) PC_GL_TRACED(glEnableClientState, __VA_ARGS__)
++#undef glDisableClientState
++#define glDisableClientState(...) PC_GL_TRACED(glDisableClientState, __VA_ARGS__)
++#undef glTexParameteri
++#define glTexParameteri(...) PC_GL_TRACED(glTexParameteri, __VA_ARGS__)
++#undef glTexParameterf
++#define glTexParameterf(...) PC_GL_TRACED(glTexParameterf, __VA_ARGS__)
++#undef glHint
++#define glHint(...) PC_GL_TRACED(glHint, __VA_ARGS__)
++#undef glFogi
++#define glFogi(...) PC_GL_TRACED(glFogi, __VA_ARGS__)
++#undef glFogf
++#define glFogf(...) PC_GL_TRACED(glFogf, __VA_ARGS__)
++#undef glFogfv
++#define glFogfv(...) PC_GL_TRACED(glFogfv, __VA_ARGS__)
++#undef glLightModelfv
++#define glLightModelfv(...) PC_GL_TRACED(glLightModelfv, __VA_ARGS__)
++#undef glLightfv
++#define glLightfv(...) PC_GL_TRACED(glLightfv, __VA_ARGS__)
++#undef glColorMaterial
++#define glColorMaterial(...) PC_GL_TRACED(glColorMaterial, __VA_ARGS__)
++#undef glMatrixMode
++#define glMatrixMode(...) PC_GL_TRACED(glMatrixMode, __VA_ARGS__)
++#undef glShadeModel
++#define glShadeModel(...) PC_GL_TRACED(glShadeModel, __VA_ARGS__)
++#undef glBlendFunc
++#define glBlendFunc(...) PC_GL_TRACED(glBlendFunc, __VA_ARGS__)
++#undef glAlphaFunc
++#define glAlphaFunc(...) PC_GL_TRACED(glAlphaFunc, __VA_ARGS__)
++#undef glCullFace
++#define glCullFace(...) PC_GL_TRACED(glCullFace, __VA_ARGS__)
++#undef glDepthFunc
++#define glDepthFunc(...) PC_GL_TRACED(glDepthFunc, __VA_ARGS__)
++#undef glPolygonOffset
++#define glPolygonOffset(...) PC_GL_TRACED(glPolygonOffset, __VA_ARGS__)
++#undef glPixelStorei
++#define glPixelStorei(...) PC_GL_TRACED(glPixelStorei, __VA_ARGS__)
++#undef glTexImage2D
++#define glTexImage2D(...) PC_GL_TRACED(glTexImage2D, __VA_ARGS__)
++#undef glTexSubImage2D
++#define glTexSubImage2D(...) PC_GL_TRACED(glTexSubImage2D, __VA_ARGS__)
++#undef glCopyTexSubImage2D
++#define glCopyTexSubImage2D(...) PC_GL_TRACED(glCopyTexSubImage2D, __VA_ARGS__)
++#undef glGetIntegerv
++#define glGetIntegerv(...) PC_GL_TRACED(glGetIntegerv, __VA_ARGS__)
++#undef glGetFloatv
++#define glGetFloatv(...) PC_GL_TRACED(glGetFloatv, __VA_ARGS__)
++#undef glReadPixels
++#define glReadPixels(...) PC_GL_TRACED(glReadPixels, __VA_ARGS__)
++#undef glDrawArrays
++#define glDrawArrays(...) PC_GL_TRACED(glDrawArrays, __VA_ARGS__)
++#undef glVertexPointer
++#define glVertexPointer(...) PC_GL_TRACED(glVertexPointer, __VA_ARGS__)
++#undef glTexCoordPointer
++#define glTexCoordPointer(...) PC_GL_TRACED(glTexCoordPointer, __VA_ARGS__)
++#undef glNormalPointer
++#define glNormalPointer(...) PC_GL_TRACED(glNormalPointer, __VA_ARGS__)
++#undef glColorPointer
++#define glColorPointer(...) PC_GL_TRACED(glColorPointer, __VA_ARGS__)
++#undef glViewport
++#define glViewport(...) PC_GL_TRACED(glViewport, __VA_ARGS__)
++#undef glLineWidth
++#define glLineWidth(...) PC_GL_TRACED(glLineWidth, __VA_ARGS__)
++#undef glDepthMask
++#define glDepthMask(...) PC_GL_TRACED(glDepthMask, __VA_ARGS__)
++#undef glColorMask
++#define glColorMask(...) PC_GL_TRACED(glColorMask, __VA_ARGS__)
++#undef glClear
++#define glClear(...) PC_GL_TRACED(glClear, __VA_ARGS__)
++#undef glCallList
++#define glCallList(...) PC_GL_TRACED(glCallList, __VA_ARGS__)
++#undef glCallLists
++#define glCallLists(...) PC_GL_TRACED(glCallLists, __VA_ARGS__)
++#undef glNewList
++#define glNewList(...) PC_GL_TRACED(glNewList, __VA_ARGS__)
++#undef glEndList
++#define glEndList(...) PC_GL_TRACED(glEndList, __VA_ARGS__)
++#undef glDeleteLists
++#define glDeleteLists(...) PC_GL_TRACED(glDeleteLists, __VA_ARGS__)
++#undef glBindTexture
++#define glBindTexture(...) PC_GL_TRACED(glBindTexture, __VA_ARGS__)
++#undef glGenTextures
++#define glGenTextures(...) PC_GL_TRACED(glGenTextures, __VA_ARGS__)
++#undef glDeleteTextures
++#define glDeleteTextures(...) PC_GL_TRACED(glDeleteTextures, __VA_ARGS__)
++#undef glOrtho
++#define glOrtho(...) PC_GL_TRACED(glOrtho, __VA_ARGS__)
++#undef glFrustum
++#define glFrustum(...) PC_GL_TRACED(glFrustum, __VA_ARGS__)
++#undef glClearColor
++#define glClearColor(...) PC_GL_TRACED(glClearColor, __VA_ARGS__)
++#undef glClearDepth
++#define glClearDepth(...) PC_GL_TRACED(glClearDepth, __VA_ARGS__)
++#undef glScaled
++#define glScaled(...) PC_GL_TRACED(glScaled, __VA_ARGS__)
++#endif
++
+ 
+ #ifndef GL_NEAREST_MIPMAP_LINEAR
+ #define GL_NEAREST_MIPMAP_LINEAR 0x2702
+@@ -55,11 +183,19 @@
+     return major > 1 || (major == 1 && minor >= 2);
+ }
+ 
++#if defined(__ANDROID__)
++#include <gl4esinit.h>
++// Extension/core entry points must come from gl4es, not from the raw GLES driver.
++#define PC_GL_PROC(name) gl4es_GetProcAddress(name)
++#else
++#define PC_GL_PROC(name) SDL_GL_GetProcAddress(name)
++#endif
++
+ // SDL_GL_GetProcAddress-based runtime loaders (desktop only).
+ static void *getProcEither(const char *arbName, const char *coreName)
+ {
+-	void *f = SDL_GL_GetProcAddress(arbName);
+-	if (!f) f = SDL_GL_GetProcAddress(coreName);
++	void *f = PC_GL_PROC(arbName);
++	if (!f) f = PC_GL_PROC(coreName);
+ 	return f;
+ }
+ 
+@@ -347,6 +483,7 @@
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mipmapLevel > 0 ? mipmapLevel : 0);
+     }
+ 
++#if !defined(__ANDROID__) // gl4es rejects the anisotropy enums (GL_INVALID_ENUM every time)
+     if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") == SDL_TRUE)
+     {
+         GLfloat maximum = 1.0f;
+@@ -355,10 +492,14 @@
+         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                         requested < maximum ? requested : maximum);
+     }
++#endif
+ }
+ 
+ int renderGetMaxAnisotropy()
+ {
++#if defined(__ANDROID__)
++    return 1;
++#endif
+     if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") != SDL_TRUE)
+         return 1;
+     GLfloat maximum = 1.0f;
+@@ -431,6 +572,16 @@
+         case RenderLightParameter::Position: glParameter = GL_POSITION; break;
+     }
+     glLightfv(GL_LIGHT0 + lightIndex, glParameter, values);
++#if defined(__ANDROID__)
++    {
++        static int dbgLights = 0;
++        if (dbgLights < 16)
++        {
++            ++dbgLights;
++            std::fprintf(stderr, "[light] light%d param=0x%x values=(%.3f, %.3f, %.3f, %.3f)\n", lightIndex, glParameter, values[0], values[1], values[2], values[3]);
++        }
++    }
++#endif
+ }
+ 
+ void renderLightModelAmbient(const float* values)
+@@ -681,6 +832,58 @@
+     if (mesh.data == nullptr || mesh.stride <= 0 || mesh.count <= 0)
+         return false;
+ 
++#if defined(__ANDROID__)
++    // Diagnostics for the odd shading of lit objects (inventory blocks, hand): dump what is
++    // being sent for the first draws that carry normals, plus the GL state around them.
++    {
++        static int dbgDraws = 0;
++        if (mesh.hasNormals && dbgDraws < 10)
++        {
++            ++dbgDraws;
++            const unsigned char *base = reinterpret_cast<const unsigned char *>(mesh.data);
++            std::fprintf(stderr, "[normals] draw #%d prim=%d first=%d count=%d stride=%d color=%d tex=%d bright=%d posShort=%d\n", dbgDraws,
++                         static_cast<int>(mesh.primitive), mesh.first, mesh.count, mesh.stride, mesh.hasColor, mesh.hasTexture,
++                         mesh.hasBrightness, mesh.positionShort);
++            const int shown = mesh.count < 8 ? mesh.count : 8;
++            for (int i = 0; i < shown; i++)
++            {
++                const unsigned char *v = base + static_cast<size_t>(mesh.first + i) * static_cast<size_t>(mesh.stride);
++                const signed char *n = reinterpret_cast<const signed char *>(v + mesh.normalOffset);
++                std::fprintf(stderr, "[normals]   v%d normal=(%d,%d,%d)", i, n[0], n[1], n[2]);
++                if (mesh.hasColor)
++                {
++                    const unsigned char *c = v + mesh.colorOffset;
++                    std::fprintf(stderr, " color=%02x%02x%02x%02x", c[0], c[1], c[2], c[3]);
++                }
++                if (!mesh.positionShort)
++                {
++                    const float *p = reinterpret_cast<const float *>(v);
++                    std::fprintf(stderr, " pos=(%.2f,%.2f,%.2f)", p[0], p[1], p[2]);
++                }
++                std::fprintf(stderr, "\n");
++            }
++            GLint shade = 0, cullMode = 0, frontFace = 0, depthFunc = 0, matrixMode = 0;
++            GLboolean depthMask = 0;
++            GLfloat mv[16] = {};
++            glad_glGetIntegerv(GL_SHADE_MODEL, &shade);
++            glad_glGetIntegerv(GL_CULL_FACE_MODE, &cullMode);
++            glad_glGetIntegerv(GL_FRONT_FACE, &frontFace);
++            glad_glGetIntegerv(GL_DEPTH_FUNC, &depthFunc);
++            glad_glGetIntegerv(GL_MATRIX_MODE, &matrixMode);
++            glad_glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
++            glad_glGetFloatv(GL_MODELVIEW_MATRIX, mv);
++            std::fprintf(stderr, "[normals]   state: lighting=%d light0=%d light1=%d colorMaterial=%d rescale=%d normalize=%d cull=%d depthTest=%d tex2d=%d blend=%d\n",
++                         glad_glIsEnabled(GL_LIGHTING), glad_glIsEnabled(GL_LIGHT0), glad_glIsEnabled(GL_LIGHT1), glad_glIsEnabled(GL_COLOR_MATERIAL),
++                         glad_glIsEnabled(GL_RESCALE_NORMAL), glad_glIsEnabled(GL_NORMALIZE), glad_glIsEnabled(GL_CULL_FACE),
++                         glad_glIsEnabled(GL_DEPTH_TEST), glad_glIsEnabled(GL_TEXTURE_2D), glad_glIsEnabled(GL_BLEND));
++            std::fprintf(stderr, "[normals]   shadeModel=0x%x cullMode=0x%x frontFace=0x%x depthFunc=0x%x depthMask=%d matrixMode=0x%x\n", shade, cullMode,
++                         frontFace, depthFunc, depthMask, matrixMode);
++            std::fprintf(stderr, "[normals]   modelview: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f\n", mv[0], mv[1],
++                         mv[2], mv[3], mv[4], mv[5], mv[6], mv[7], mv[8], mv[9], mv[10], mv[11], mv[12], mv[13], mv[14], mv[15]);
++        }
++    }
++#endif
++
+     auto pointerForOffset = [&](int offset) -> const void*
+     {
+         return reinterpret_cast<const unsigned char*>(mesh.data) + offset;
+diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
+--- orig/src/platform/Resources_PC.cpp	2026-09-18 18:14:00.391455966 +0000
++++ new/src/platform/Resources_PC.cpp	2026-09-19 00:44:26.198822922 +0000
+@@ -8,6 +8,30 @@
+ 
+ std::string PlatformResources::baseDir()
+ {
++#if defined(__ANDROID__)
++    // No exe directory on Android. Game data (assets.pak, or loose assets/ and
++    // resources/) is looked up in the app's external files dir first
++    // (/sdcard/Android/data/<package>/files/), then in /sdcard/OptiCraft, which is
++    // easier to fill from a file manager but needs the "All files access" permission.
++    static const std::string androidDir = []() -> std::string {
++        namespace fs = std::filesystem;
++        std::string appDir;
++        if (const char* external = SDL_AndroidGetExternalStoragePath())
++            appDir = external;
++        const std::string candidates[] = { appDir, "/sdcard/OptiCraft", "/storage/emulated/0/OptiCraft" };
++        for (const std::string& dir : candidates)
++        {
++            if (dir.empty())
++                continue;
++            std::error_code ec;
++            if (fs::exists(fs::path(dir) / "assets.pak", ec) || fs::exists(fs::path(dir) / "assets", ec))
++                return dir + "/";
++        }
++        return appDir.empty() ? std::string() : appDir + "/";
++    }();
++    if (!androidDir.empty())
++        return androidDir;
++#endif
+     char* base = SDL_GetBasePath();
+     if (base)
+     {
+diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/SoundManager_PC.cpp
+--- orig/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.289487939 +0000
++++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-22 04:51:54.616906747 +0000
+@@ -39,6 +39,10 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <cstdlib>
++#if defined(__ANDROID__)
++#include <atomic>
++#include <cstdio>
++#endif
+ 
+ #include "SDL.h"
+ 
+@@ -87,6 +91,16 @@
+ static int               s_streamingChannel = -1;
+ static AudioListenerState s_listener;
+ 
++#if defined(__ANDROID__)
++// Diagnostics for silent audio on Android (goes to last_run.log).
++static int s_dbgSoundsRegistered = 0;
++static int s_dbgStreamingRegistered = 0;
++static int s_dbgMusicRegistered = 0;
++static int s_dbgPlays = 0;
++static std::atomic<int> s_dbgCallbacks{0};
++static std::atomic<bool> s_dbgNonSilentLogged{false};
++#endif
++
+ // Decode an OGG file to float PCM (mono → stereo interleaved, 44100 Hz)
+ static std::vector<float> decodeOgg(const std::string &path, float pitch)
+ {
+@@ -94,7 +108,12 @@
+     short *pcmShort = nullptr;
+     int samples = platformDecodeVorbis(path, &channels, &sampleRate, &pcmShort);
+     if (samples <= 0 || pcmShort == nullptr)
++    {
++#if defined(__ANDROID__)
++        std::fprintf(stderr, "[audio] decode failed: %s\n", path.c_str());
++#endif
+         return {};
++    }
+ 
+     // Resample + convert to float stereo
+     std::vector<float> out;
+@@ -193,6 +212,10 @@
+ {
+     float *out   = reinterpret_cast<float *>(stream);
+     int   frames = len / (int)(sizeof(float) * CHANNELS);
++#if defined(__ANDROID__)
++    if (s_dbgCallbacks.fetch_add(1) == 0)
++        std::fprintf(stderr, "[audio] callback running, buffer=%d bytes\n", len);
++#endif
+ 
+     std::memset(stream, 0, len);
+ 
+@@ -227,6 +250,21 @@
+ 
+     PcMusicStream::mix(out, frames, musicVolume);
+ 
++#if defined(__ANDROID__)
++    if (!s_dbgNonSilentLogged.load())
++    {
++        for (int i = 0; i < frames * CHANNELS; i++)
++        {
++            if (out[i] > 0.0001f || out[i] < -0.0001f)
++            {
++                s_dbgNonSilentLogged.store(true);
++                std::fprintf(stderr, "[audio] first non-silent buffer mixed\n");
++                break;
++            }
++        }
++    }
++#endif
++
+     // Soft clip to [-1, 1]
+     for (int i = 0; i < frames * CHANNELS; i++)
+     {
+@@ -287,6 +325,13 @@
+     }
+     SDL_PauseAudioDevice(s_device, 0); // start playback
+     loaded = true;
++#if defined(__ANDROID__)
++    {
++        const char *driver = SDL_GetCurrentAudioDriver();
++        std::fprintf(stderr, "[audio] device open: driver=%s freq=%d channels=%d format=0x%x samples=%d\n",
++                     driver ? driver : "?", have.freq, (int)have.channels, (unsigned)have.format, (int)have.samples);
++    }
++#endif
+ }
+ 
+ void SoundManager::onSoundOptionsChanged()
+@@ -342,19 +387,37 @@
+ void SoundManager::addSound(const jstring &s, const std::string &file)
+ {
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
++    {
+         soundPoolSounds.addSound(s, file);
++#if defined(__ANDROID__)
++        if (++s_dbgSoundsRegistered <= 3)
++            std::fprintf(stderr, "[audio] addSound %s -> %s\n", s.c_str(), file.c_str());
++#endif
++    }
+ }
+ 
+ void SoundManager::addStreaming(const jstring &s, const std::string &file)
+ {
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
++    {
+         soundPoolStreaming.addSound(s, file);
++#if defined(__ANDROID__)
++        ++s_dbgStreamingRegistered;
++        std::fprintf(stderr, "[audio] addStreaming %s -> %s\n", s.c_str(), file.c_str());
++#endif
++    }
+ }
+ 
+ void SoundManager::addMusic(const jstring &s, const std::string &file)
+ {
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
++    {
+         soundPoolMusic.addSound(s, file);
++#if defined(__ANDROID__)
++        if (++s_dbgMusicRegistered <= 6)
++            std::fprintf(stderr, "[audio] addMusic %s -> %s\n", s.c_str(), file.c_str());
++#endif
++    }
+ }
+ 
+ bool SoundManager::playMusicFileNow(const std::string &file)
+@@ -455,9 +518,16 @@
+     if (s.empty()) return;
+ 
+     SoundPoolEntry *entry = soundPoolStreaming.getRandomSoundFromSoundPool(s);
++#if defined(__ANDROID__)
++    std::fprintf(stderr, "[audio] playStreaming '%s' at %.1f %.1f %.1f: entry=%s (streaming registered: %d)\n", s.c_str(), f, f1, f2,
++                 entry ? entry->soundUrl.c_str() : "NONE", s_dbgStreamingRegistered);
++#endif
+     if (entry != nullptr && f3 > 0.0f)
+     {
+         const float attenuation = audioStreamingAttenuation(s_listener, f, f1, f2);
++#if defined(__ANDROID__)
++        std::fprintf(stderr, "[audio] playStreaming attenuation=%.3f\n", attenuation);
++#endif
+         if (attenuation <= 0.0f)
+             return;
+ 
+@@ -478,6 +548,14 @@
+     if (!loaded || !options || options->soundVolume == 0.0f) return;
+ 
+     SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
++#if defined(__ANDROID__)
++    if (s_dbgPlays < 20)
++    {
++        ++s_dbgPlays;
++        std::fprintf(stderr, "[audio] playSound %s: entry=%s (registered: sounds=%d streaming=%d music=%d)\n", s.c_str(),
++                     entry ? entry->soundUrl.c_str() : "NONE", s_dbgSoundsRegistered, s_dbgStreamingRegistered, s_dbgMusicRegistered);
++    }
++#endif
+     if (entry != nullptr && f3 > 0.0f)
+     {
+         const float attenuation = audioSpatialAttenuation(s_listener, f, f1, f2, f3);
+@@ -495,6 +573,14 @@
+     if (!loaded || !options || options->soundVolume == 0.0f) return;
+ 
+     SoundPoolEntry *entry = soundPoolSounds.getRandomSoundFromSoundPool(s);
++#if defined(__ANDROID__)
++    if (s_dbgPlays < 20)
++    {
++        ++s_dbgPlays;
++        std::fprintf(stderr, "[audio] playSoundFX %s: entry=%s (registered: sounds=%d streaming=%d music=%d)\n", s.c_str(),
++                     entry ? entry->soundUrl.c_str() : "NONE", s_dbgSoundsRegistered, s_dbgStreamingRegistered, s_dbgMusicRegistered);
++    }
++#endif
+     if (entry != nullptr)
+     {
+         float vol = (f > 1.0f ? 1.0f : f) * 0.25f;
