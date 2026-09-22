@@ -240,6 +240,23 @@ jobs:
           PY2
           grep -n 'NO_SUGGESTIONS' apk/app/src/main/java/org/libsdl/app/SDLActivity.java
 
+          # A plain `new Thread()` on Android gets a much smaller native stack than a desktop
+          # main thread. This game's world lighting can recurse deeply right after generating a
+          # large area (e.g. arriving in a fresh dimension), which fit on a desktop stack but
+          # silently overflowed this one -- a stack-overflow SIGSEGV can even take out the
+          # process before it reaches our own signal handler. Give the game thread a desktop-sized
+          # stack instead of the JVM's small default.
+          python3 - <<'PY3'
+          p = 'apk/app/src/main/java/org/libsdl/app/SDLActivity.java'
+          s = open(p).read()
+          old = 'mSDLThread = new Thread(new SDLMain(), "SDLThread");'
+          assert s.count(old) == 1, 'SDLThread creation line not found'
+          new = 'mSDLThread = new Thread(null, new SDLMain(), "SDLThread", 16 * 1024 * 1024);'
+          open(p, 'w').write(s.replace(old, new, 1))
+          PY3
+          grep -n 'SDLThread(' apk/app/src/main/java/org/libsdl/app/SDLActivity.java || true
+          grep -n 'mSDLThread = new Thread' apk/app/src/main/java/org/libsdl/app/SDLActivity.java
+
           LIBDIR=apk/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$LIBDIR"
           cp "$(find build -maxdepth 1 -name libmain.so | head -n1)" "$LIBDIR/libmain.so"
@@ -286,4 +303,3 @@ jobs:
             build/libmain.so
             build/external/SDL2/libSDL2.so
           if-no-files-found: warn
-          
