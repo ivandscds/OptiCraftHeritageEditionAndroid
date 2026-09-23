@@ -1904,143 +1904,16 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.h new/src/pc/lwjgl/TouchControls.h
 +#endif
 diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenGlRenderBackend.cpp
 --- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:00.387082415 +0000
-+++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-21 00:34:00.657790642 +0000
-@@ -14,6 +14,134 @@
- #include <cstdio>
++++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-23 20:28:38.369697812 +0000
+@@ -15,6 +15,7 @@
  #include <cstring>
  
-+#if defined(__ANDROID__)
-+// Diagnostic build: report the first GL errors together with the call that raised them
-+// (goes to last_run.log). Stops checking after 40 errors or 60000 calls to stay cheap.
-+static int pcGlTraceReported = 0;
-+static int pcGlTraceChecks = 0;
-+static int pcGlTraceSeenLine[64];
-+static GLenum pcGlTraceSeenError[64];
-+static void pcGlTraceCheck(const char *call, int line)
-+{
-+	if (pcGlTraceReported >= 64 || ++pcGlTraceChecks > 200000)
-+		return;
-+	for (GLenum e = glad_glGetError(); e != GL_NO_ERROR && pcGlTraceReported < 64; e = glad_glGetError())
-+	{
-+		bool seen = false; // report each (call site, error) only once
-+		for (int i = 0; i < pcGlTraceReported; ++i)
-+			if (pcGlTraceSeenLine[i] == line && pcGlTraceSeenError[i] == e)
-+				seen = true;
-+		if (seen)
-+			continue;
-+		pcGlTraceSeenLine[pcGlTraceReported] = line;
-+		pcGlTraceSeenError[pcGlTraceReported] = e;
-+		++pcGlTraceReported;
-+		std::fprintf(stderr, "[glerr] 0x%04x after %s (PcOpenGlRenderBackend.cpp:%d)\n", e, call, line);
-+	}
-+}
-+#define PC_GL_TRACED(function, ...) (glad_##function(__VA_ARGS__), pcGlTraceCheck(#function "(" #__VA_ARGS__ ")", __LINE__))
-+#undef glEnable
-+#define glEnable(...) PC_GL_TRACED(glEnable, __VA_ARGS__)
-+#undef glDisable
-+#define glDisable(...) PC_GL_TRACED(glDisable, __VA_ARGS__)
-+#undef glEnableClientState
-+#define glEnableClientState(...) PC_GL_TRACED(glEnableClientState, __VA_ARGS__)
-+#undef glDisableClientState
-+#define glDisableClientState(...) PC_GL_TRACED(glDisableClientState, __VA_ARGS__)
-+#undef glTexParameteri
-+#define glTexParameteri(...) PC_GL_TRACED(glTexParameteri, __VA_ARGS__)
-+#undef glTexParameterf
-+#define glTexParameterf(...) PC_GL_TRACED(glTexParameterf, __VA_ARGS__)
-+#undef glHint
-+#define glHint(...) PC_GL_TRACED(glHint, __VA_ARGS__)
-+#undef glFogi
-+#define glFogi(...) PC_GL_TRACED(glFogi, __VA_ARGS__)
-+#undef glFogf
-+#define glFogf(...) PC_GL_TRACED(glFogf, __VA_ARGS__)
-+#undef glFogfv
-+#define glFogfv(...) PC_GL_TRACED(glFogfv, __VA_ARGS__)
-+#undef glLightModelfv
-+#define glLightModelfv(...) PC_GL_TRACED(glLightModelfv, __VA_ARGS__)
-+#undef glLightfv
-+#define glLightfv(...) PC_GL_TRACED(glLightfv, __VA_ARGS__)
-+#undef glColorMaterial
-+#define glColorMaterial(...) PC_GL_TRACED(glColorMaterial, __VA_ARGS__)
-+#undef glMatrixMode
-+#define glMatrixMode(...) PC_GL_TRACED(glMatrixMode, __VA_ARGS__)
-+#undef glShadeModel
-+#define glShadeModel(...) PC_GL_TRACED(glShadeModel, __VA_ARGS__)
-+#undef glBlendFunc
-+#define glBlendFunc(...) PC_GL_TRACED(glBlendFunc, __VA_ARGS__)
-+#undef glAlphaFunc
-+#define glAlphaFunc(...) PC_GL_TRACED(glAlphaFunc, __VA_ARGS__)
-+#undef glCullFace
-+#define glCullFace(...) PC_GL_TRACED(glCullFace, __VA_ARGS__)
-+#undef glDepthFunc
-+#define glDepthFunc(...) PC_GL_TRACED(glDepthFunc, __VA_ARGS__)
-+#undef glPolygonOffset
-+#define glPolygonOffset(...) PC_GL_TRACED(glPolygonOffset, __VA_ARGS__)
-+#undef glPixelStorei
-+#define glPixelStorei(...) PC_GL_TRACED(glPixelStorei, __VA_ARGS__)
-+#undef glTexImage2D
-+#define glTexImage2D(...) PC_GL_TRACED(glTexImage2D, __VA_ARGS__)
-+#undef glTexSubImage2D
-+#define glTexSubImage2D(...) PC_GL_TRACED(glTexSubImage2D, __VA_ARGS__)
-+#undef glCopyTexSubImage2D
-+#define glCopyTexSubImage2D(...) PC_GL_TRACED(glCopyTexSubImage2D, __VA_ARGS__)
-+#undef glGetIntegerv
-+#define glGetIntegerv(...) PC_GL_TRACED(glGetIntegerv, __VA_ARGS__)
-+#undef glGetFloatv
-+#define glGetFloatv(...) PC_GL_TRACED(glGetFloatv, __VA_ARGS__)
-+#undef glReadPixels
-+#define glReadPixels(...) PC_GL_TRACED(glReadPixels, __VA_ARGS__)
-+#undef glDrawArrays
-+#define glDrawArrays(...) PC_GL_TRACED(glDrawArrays, __VA_ARGS__)
-+#undef glVertexPointer
-+#define glVertexPointer(...) PC_GL_TRACED(glVertexPointer, __VA_ARGS__)
-+#undef glTexCoordPointer
-+#define glTexCoordPointer(...) PC_GL_TRACED(glTexCoordPointer, __VA_ARGS__)
-+#undef glNormalPointer
-+#define glNormalPointer(...) PC_GL_TRACED(glNormalPointer, __VA_ARGS__)
-+#undef glColorPointer
-+#define glColorPointer(...) PC_GL_TRACED(glColorPointer, __VA_ARGS__)
-+#undef glViewport
-+#define glViewport(...) PC_GL_TRACED(glViewport, __VA_ARGS__)
-+#undef glLineWidth
-+#define glLineWidth(...) PC_GL_TRACED(glLineWidth, __VA_ARGS__)
-+#undef glDepthMask
-+#define glDepthMask(...) PC_GL_TRACED(glDepthMask, __VA_ARGS__)
-+#undef glColorMask
-+#define glColorMask(...) PC_GL_TRACED(glColorMask, __VA_ARGS__)
-+#undef glClear
-+#define glClear(...) PC_GL_TRACED(glClear, __VA_ARGS__)
-+#undef glCallList
-+#define glCallList(...) PC_GL_TRACED(glCallList, __VA_ARGS__)
-+#undef glCallLists
-+#define glCallLists(...) PC_GL_TRACED(glCallLists, __VA_ARGS__)
-+#undef glNewList
-+#define glNewList(...) PC_GL_TRACED(glNewList, __VA_ARGS__)
-+#undef glEndList
-+#define glEndList(...) PC_GL_TRACED(glEndList, __VA_ARGS__)
-+#undef glDeleteLists
-+#define glDeleteLists(...) PC_GL_TRACED(glDeleteLists, __VA_ARGS__)
-+#undef glBindTexture
-+#define glBindTexture(...) PC_GL_TRACED(glBindTexture, __VA_ARGS__)
-+#undef glGenTextures
-+#define glGenTextures(...) PC_GL_TRACED(glGenTextures, __VA_ARGS__)
-+#undef glDeleteTextures
-+#define glDeleteTextures(...) PC_GL_TRACED(glDeleteTextures, __VA_ARGS__)
-+#undef glOrtho
-+#define glOrtho(...) PC_GL_TRACED(glOrtho, __VA_ARGS__)
-+#undef glFrustum
-+#define glFrustum(...) PC_GL_TRACED(glFrustum, __VA_ARGS__)
-+#undef glClearColor
-+#define glClearColor(...) PC_GL_TRACED(glClearColor, __VA_ARGS__)
-+#undef glClearDepth
-+#define glClearDepth(...) PC_GL_TRACED(glClearDepth, __VA_ARGS__)
-+#undef glScaled
-+#define glScaled(...) PC_GL_TRACED(glScaled, __VA_ARGS__)
-+#endif
-+
  
++
  #ifndef GL_NEAREST_MIPMAP_LINEAR
  #define GL_NEAREST_MIPMAP_LINEAR 0x2702
-@@ -55,11 +183,19 @@
+ #endif
+@@ -55,11 +56,19 @@
      return major > 1 || (major == 1 && minor >= 2);
  }
  
@@ -2062,7 +1935,7 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
  	return f;
  }
  
-@@ -347,6 +483,7 @@
+@@ -347,6 +356,7 @@
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mipmapLevel > 0 ? mipmapLevel : 0);
      }
  
@@ -2070,7 +1943,7 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
      if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") == SDL_TRUE)
      {
          GLfloat maximum = 1.0f;
-@@ -355,10 +492,14 @@
+@@ -355,10 +365,14 @@
          glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
                          requested < maximum ? requested : maximum);
      }
@@ -2085,7 +1958,7 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
      if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic") != SDL_TRUE)
          return 1;
      GLfloat maximum = 1.0f;
-@@ -431,6 +572,16 @@
+@@ -431,6 +445,16 @@
          case RenderLightParameter::Position: glParameter = GL_POSITION; break;
      }
      glLightfv(GL_LIGHT0 + lightIndex, glParameter, values);
@@ -2102,7 +1975,7 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
  }
  
  void renderLightModelAmbient(const float* values)
-@@ -681,6 +832,58 @@
+@@ -681,6 +705,58 @@
      if (mesh.data == nullptr || mesh.stride <= 0 || mesh.count <= 0)
          return false;
  
