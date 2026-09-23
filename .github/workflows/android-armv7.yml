@@ -52,7 +52,7 @@ jobs:
             -DANDROID_ARM_NEON=ON \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DMC_LOG_LEVEL=2 2>&1 | tee configure.log
+            -DMC_LOG_LEVEL=1 2>&1 | tee configure.log
 
       - name: Build (keep going to collect every error)
         shell: bash
