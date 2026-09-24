@@ -18,10 +18,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(MC_LOG_LEVEL "0" CACHE STRING "Unified diagnostic verbosity: 0=off, 1=info, 2=debug, 3=trace")
 set_property(CACHE MC_LOG_LEVEL PROPERTY STRINGS 0 1 2 3)
 
-# Same low-end tuning profile as the 32-bit desktop build (async chunk gen,
-# bounded pathfinding, throttled entity AI). Off by default: phones are far
-# faster than the hardware that profile was written for.
+# This flag actually swaps in a whole alternate renderer/world-gen pipeline built
+# for the old-Intel-GPU (GMA 3100) Windows XP build elsewhere in this project --
+# different terrain noise, a different lighting algorithm, a dozen PcLegacy*
+# classes replacing the normal render path. It was never exercised on top of
+# gl4es, and it changes what worlds look like (not just how fast they run), so
+# it is not something to flip on for a phone/POS terminal. Left here, off, in
+# case that ever changes.
 option(ANDROID_LEGACY_PROFILE "Enable the PC_LEGACY_BUILD tuning profile" OFF)
+
+# Cross-file inlining. The desktop build (see OPTICRAFT_ENABLE_LTO in the root
+# CMakeLists.txt) gates this behind a flag because of the extra build time; here
+# the build only ever runs in CI, so the time is free and the codegen win is
+# worth having by default, especially on hardware this weak.
+option(ANDROID_ENABLE_LTO "Enable Link-Time Optimization for Release builds" ON)
 
 # --- Third-party dependencies -------------------------------------------------
 foreach(_dep SDL2 SDL_net zlib glad gl4es)
@@ -50,6 +60,8 @@ add_subdirectory(external/glad EXCLUDE_FROM_ALL)
 add_subdirectory(external/zlib EXCLUDE_FROM_ALL)
 
 set(BUILD_SHARED_LIBS OFF)
+# Static SDL_net looks for the target SDL2::SDL2-static, but SDL2 is built shared
+# here (SDLActivity needs libSDL2.so). Point that name at the shared target.
 if(NOT TARGET SDL2::SDL2-static)
     add_library(SDL2::SDL2-static ALIAS SDL2)
 endif()
@@ -80,6 +92,16 @@ set_target_properties(main PROPERTIES
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
 )
+
+if(ANDROID_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error LANGUAGES C CXX)
+    if(ipo_supported)
+        set_target_properties(main PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    else()
+        message(WARNING "IPO/LTO requested but not supported by this toolchain, skipping: ${ipo_error}")
+    endif()
+endif()
 
 target_compile_definitions(main PRIVATE
     MC_LINUX
