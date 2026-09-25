@@ -111,8 +111,11 @@ if(ANDROID_LEGACY_PROFILE)
     target_compile_definitions(main PRIVATE PC_LEGACY_BUILD=1)
 endif()
 
+# CMake's own Release default already adds -O3 -DNDEBUG; naming an explicit -O2 here used to
+# land AFTER that on the compile line and silently win over it (checked with a throwaway
+# CMake+Ninja project: FLAGS ended up as "-O3 -DNDEBUG -O2"), quietly downgrading every Release
+# Android build to -O2. Nothing else here needs a non-default optimization level.
 target_compile_options(main PRIVATE
-    $<$<CONFIG:Release>:-O2>
     -fno-math-errno
 )
 
