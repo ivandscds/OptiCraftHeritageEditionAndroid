@@ -51,6 +51,15 @@ The Wii build uses devkitPPC/libogc and a native GX rendering path. The Homebrew
 apps/OptiCraft/
 ```
 
+### Android
+
+it uses sdl2 and some shit idk i forgot, assets.pak should be on: 
+
+```text
+/sdcard/OptiCraft/
+```
+
+
 ## Source layout
 
 ```text
