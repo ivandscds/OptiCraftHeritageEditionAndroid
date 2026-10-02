@@ -3,6 +3,9 @@
 #include "platform/WorldLoadTrace.h"
 #include "platform/Diagnostics.h"
 #include "platform/PlatformTuning.h"
+#if PLATFORM_PS2
+#include "ps2/diagnostics/Ps2OptimizationValidation.h"
+#endif
 #if PLATFORM_PC_LEGACY
 #include "pc/world/PcLegacyTickScheduler.h"
 #endif
@@ -106,8 +109,8 @@
 #include "platform/ExtendedProfiler.h"
 #if PLATFORM_FAST_BLOCK_COLLISIONS || PLATFORM_EARLY_COLLISION_EXIT || PLATFORM_FLOAT_COLLISION_SWEEP
 #include "platform/world/PlatformBlockCollisionSweeper.h"
-#include "platform/world/StreamingFrameBudget.h"
 #endif
+#include "platform/world/StreamingFrameBudget.h"
 
 #if PLATFORM_BOUNDED_WORLD
 static int_t platformFindTopSpawnBlockY(World *world, int_t x, int_t z)
@@ -161,6 +164,8 @@ static bool isActiveClientEntity(Entity *entity)
     Minecraft *mc = Minecraft::getMinecraft();
     return mc != nullptr &&
            (static_cast<void *>(mc->thePlayer) == static_cast<void *>(entity) ||
+            static_cast<void *>(mc->thePlayerOne) == static_cast<void *>(entity) ||
+            static_cast<void *>(mc->thePlayer2) == static_cast<void *>(entity) ||
             static_cast<void *>(mc->renderViewEntity) == static_cast<void *>(entity));
 }
 
@@ -630,6 +635,14 @@ void World::generateSpawnPoint()
         spawnX = position->x;
         spawnZ = position->z;
         delete position;
+    }
+
+    if (isLimitedWorld())
+    {
+        if (spawnX < -64) spawnX = -64;
+        else if (spawnX > 64) spawnX = 64;
+        if (spawnZ < -64) spawnZ = -64;
+        else if (spawnZ > 64) spawnZ = 64;
     }
 
 #if defined(PS2_PLATFORM)
@@ -2557,6 +2570,8 @@ MovingObjectPosition *World::rayTraceBlocks_do_do(Vec3D *start, Vec3D *end, bool
 
 void World::playSoundAtEntity(Entity* entity, const jstring& soundName, float volume, float pitch)
 {
+    if (entity == nullptr)
+        return;
     for (size_t i = 0; i < worldAccesses.size(); i++)
     {
         worldAccesses[i]->playSound(soundName, entity->posX, entity->posY - (double)entity->yOffset, entity->posZ, volume, pitch);
@@ -2692,6 +2707,14 @@ void World::setEntityDead(Entity* entity)
         }
         updateAllPlayersSleepingFlag();
     }
+}
+
+
+void World::queueEntityForDestruction(Entity *entity)
+{
+	if (entity != nullptr && entity->isDead &&
+		std::find(unloadedEntityList.begin(), unloadedEntityList.end(), entity) == unloadedEntityList.end())
+		unloadedEntityList.push_back(entity);
 }
 
 void World::detachEntityForWorldChange(Entity *entity)
@@ -3371,11 +3394,13 @@ void World::updateEntities()
         
         if (!entity->isDead)
         {
-#if PLATFORM_PS2 && MC_LOG_LEVEL > 2
+#if PLATFORM_PS2 && MC_LOG_LEVEL >= 2
             const std::uint32_t entityTickStart = platformProfileRenderPhaseBegin();
 #endif
             updateEntity(entity);
-#if PLATFORM_PS2 && MC_LOG_LEVEL > 2
+#if PLATFORM_PS2 && MC_LOG_LEVEL == 2
+            platformProfileEntityTickWork(entityTickStart, entity);
+#elif PLATFORM_PS2 && MC_LOG_LEVEL > 2
             platformProfileEntityTick(entityTickStart, entity);
 #endif
         }
@@ -4236,19 +4261,29 @@ bool World::updatingLighting()
         if (interactiveBurst && count < PLATFORM_LIGHTING_INTERACTIVE_BURST)
             count = PLATFORM_LIGHTING_INTERACTIVE_BURST;
 
-        // Wall-clock ceiling on top of that count.  One job here is a flood fill
-        // over a box, so the count alone bounds the number of jobs but not the
-        // frame; see PLATFORM_LIGHTING_BUDGET_US.  Read once, and only when the
-        // budget is enabled, so the profiles that leave it at 0 keep the
-        // original loop.
-        const uint64_t budgetStartUs = PLATFORM_LIGHTING_BUDGET_US > 0
+#ifdef PS2_OPTIMIZATION_VALIDATION
+        const int ps2ValidationLightingQueueStart = (int)lightingToUpdate.size();
+        int ps2ValidationLightingJobs = 0;
+        const auto ps2ValidationReportLighting = [&](bool countExit, bool budgetExit)
+        {
+            Ps2OptimizationValidation::lightingDrain(ps2ValidationLightingJobs, interactiveBurst,
+                countExit, budgetExit, ps2ValidationLightingQueueStart);
+        };
+#endif
+
+        // Wall-clock ceiling on top of that count. One job here is a flood fill
+        // over a box, so the count alone does not bound a frame. Interactive
+        // drains get a little more time than streaming lighting, but are still
+        // bounded; the previous unlimited burst caused tens-of-ms stalls when a
+        // short queue contained expensive open-area skylight columns.
+        const long_t requestedLightingBudgetUs = interactiveBurst
+            ? (long_t)PLATFORM_LIGHTING_INTERACTIVE_BUDGET_US
+            : (long_t)PLATFORM_LIGHTING_BUDGET_US;
+        const uint64_t budgetStartUs = requestedLightingBudgetUs > 0
             ? PlatformCompat::getMonotonicMicros()
             : 0;
-        // Clamped to the shared streaming allowance of this frame; the
-        // interactive burst below ignores it the same way it ignores the
-        // per-call ceiling.
-        const uint64_t budgetUs = PLATFORM_LIGHTING_BUDGET_US > 0
-            ? (uint64_t)PlatformStreamingFrameBudget::clampUs((long_t)PLATFORM_LIGHTING_BUDGET_US)
+        const uint64_t budgetUs = requestedLightingBudgetUs > 0
+            ? (uint64_t)PlatformStreamingFrameBudget::clampUs(requestedLightingBudgetUs)
             : 0;
         PlatformStreamingFrameBudgetScope frameBudgetScope;
 
@@ -4272,6 +4307,9 @@ bool World::updatingLighting()
         {
             if (--count <= 0)
             {
+#ifdef PS2_OPTIMIZATION_VALIDATION
+                ps2ValidationReportLighting(true, false);
+#endif
                 lightingUpdatesCounter--;
                 return true;
             }
@@ -4287,24 +4325,33 @@ bool World::updatingLighting()
                     metadataChunkBlock.minY, metadataChunkBlock.minZ));
             }
             metadataChunkBlock.updateLight(this);
+#ifdef PS2_OPTIMIZATION_VALIDATION
+            ++ps2ValidationLightingJobs;
+#endif
 
             // Returning true is what the callers already understand as "there is
             // still lighting queued", so yielding on the clock needs no new
             // protocol: the per-frame caller comes back next frame and the
             // preload drain (Minecraft::preloadWorld) simply re-enters and
             // starts a fresh budget until the queue is empty.
-            if (PLATFORM_LIGHTING_BUDGET_US > 0 && !interactiveBurst)
+            if (budgetUs > 0)
             {
                 const uint64_t nowUs = PlatformCompat::getMonotonicMicros();
                 if (nowUs > budgetStartUs &&
                     nowUs - budgetStartUs >= budgetUs)
                 {
+#ifdef PS2_OPTIMIZATION_VALIDATION
+                    ps2ValidationReportLighting(false, true);
+#endif
                     lightingUpdatesCounter--;
                     return true;
                 }
             }
         }
 
+#ifdef PS2_OPTIMIZATION_VALIDATION
+        ps2ValidationReportLighting(false, false);
+#endif
         lightingUpdatesCounter--;
         return false;
     }
@@ -6082,6 +6129,12 @@ WorldInfo* World::getWorldInfo()
 {
     return worldInfo;
 }
+
+bool World::isLimitedWorld() const
+{
+    return worldInfo != nullptr && worldInfo->isLimitedWorld();
+}
+
 
 void World::updateAllPlayersSleepingFlag()
 {

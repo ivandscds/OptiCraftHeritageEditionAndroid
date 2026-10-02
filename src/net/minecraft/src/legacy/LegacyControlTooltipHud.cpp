@@ -1,3 +1,5 @@
+#include "net/minecraft/src/ControlIcon.h"
+#include "net/minecraft/src/UiStrings.h"
 #include "LegacyControlTooltipHud.h"
 
 #include "LegacyHudLayout.h"
@@ -14,17 +16,18 @@
 
 namespace
 {
-constexpr int_t PROMPT_COUNT = 4;
+constexpr int_t PROMPT_COUNT = 5;
 
-const char *actionName(LegacyControlAction action)
+std::string actionName(LegacyControlAction action)
 {
     switch (action)
     {
-    case LegacyControlAction::Inventory: return "Inventory";
-    case LegacyControlAction::Drop: return "Drop";
-    case LegacyControlAction::Jump: return "Jump";
-    case LegacyControlAction::Attack: return "Attack";
-    case LegacyControlAction::Use: return "Use";
+    case LegacyControlAction::Inventory: return uiText("Inventory");
+    case LegacyControlAction::Crafting: return uiText("Crafting");
+    case LegacyControlAction::Drop: return uiText("Drop");
+    case LegacyControlAction::Jump: return uiText("Jump");
+    case LegacyControlAction::Attack: return uiText("Attack");
+    case LegacyControlAction::Use: return uiText("Use");
     }
     return "";
 }
@@ -34,8 +37,9 @@ LegacyControlAction actionAt(int_t index)
     switch (index)
     {
     case 0: return LegacyControlAction::Inventory;
-    case 1: return LegacyControlAction::Jump;
-    case 2: return LegacyControlAction::Attack;
+    case 1: return LegacyControlAction::Crafting;
+    case 2: return LegacyControlAction::Jump;
+    case 3: return LegacyControlAction::Attack;
     default: return LegacyControlAction::Use;
     }
 }
@@ -87,14 +91,16 @@ int_t visiblePromptCount(const std::string *texts, int_t count)
 // family, which changes when the player picks up a different controller. Keying
 // on backend output is therefore the only form that is correct on all three.
 // Asking for the labels every frame is what makes that affordable: they are
-// short enough ("R2", "Square", "E") to live inside the string's own storage,
+// short enough ("R2", uiText("Square"), "E") to live inside the string's own storage,
 // so the comparison costs no allocation, while a hit still skips the
 // formatting, the width sweep and the layout.
 struct PromptRow
 {
+    std::string language;
     std::string labels[PROMPT_COUNT];
     std::string texts[PROMPT_COUNT];
     int_t x[PROMPT_COUNT];
+    ControlIcon icons[PROMPT_COUNT];
     int_t y;
     int_t screenWidth;
     int_t screenHeight;
@@ -112,21 +118,25 @@ struct PromptRow
     }
 };
 
-PromptRow s_row;
+PromptRow s_rows[2];
 
 // True when the cached row can be drawn as it stands. The labels are read into
 // the row either way, so a miss leaves them already refreshed for the rebuild.
-bool refreshRowKey(const GameSettings &settings, FontRenderer *font, PromptRow &row,
+bool refreshRowKey(Minecraft *mc, const GameSettings &settings, FontRenderer *font, PromptRow &row,
                    int_t screenWidth, int_t screenHeight)
 {
     const unsigned int fontRevision = font != nullptr ? font->getTextCacheRevision() : 0u;
     bool hit = row.valid && row.screenWidth == screenWidth && row.screenHeight == screenHeight &&
-        row.fontOwner == font && row.fontRevision == fontRevision;
+        row.fontOwner == font && row.fontRevision == fontRevision && row.language == settings.language;
+    row.language = settings.language;
     for (int_t i = 0; i < PROMPT_COUNT; ++i)
     {
         std::string label = legacyControlPromptLabel(settings, actionAt(i));
         if (hit && label != row.labels[i])
             hit = false;
+        const ControlIcon icon = controlIconTexture(mc, label);
+        if (row.icons[i] != icon) hit = false;
+        row.icons[i] = icon;
         row.labels[i] = label;
     }
     return hit;
@@ -137,11 +147,13 @@ void rebuildRow(const GameSettings &settings, FontRenderer *font, PromptRow &row
 {
     for (int_t i = 0; i < PROMPT_COUNT; ++i)
     {
-        row.texts[i] = prompt(settings, actionAt(i));
+        row.texts[i] = row.labels[i].empty() ? "" : (row.icons[i].texture >= 0 ? actionName(actionAt(i)) : prompt(settings, actionAt(i)));
         row.x[i] = 0;
     }
 
-    row.y = legacyHintRowY(screenHeight);
+    Minecraft *mc = Minecraft::getMinecraft();
+    const bool isSplit = (mc != nullptr && mc->isSplitScreenActive());
+    row.y = legacyHintRowY(screenHeight, isSplit);
     row.screenWidth = screenWidth;
     row.screenHeight = screenHeight;
     row.fontOwner = font;
@@ -154,7 +166,8 @@ void rebuildRow(const GameSettings &settings, FontRenderer *font, PromptRow &row
     if (visible <= 0)
         return;
 
-    const int_t textWidth = contentWidth(font, row.texts, PROMPT_COUNT);
+    int_t textWidth = contentWidth(font, row.texts, PROMPT_COUNT);
+    for (int_t i = 0; i < PROMPT_COUNT; ++i) if (!row.texts[i].empty() && row.icons[i].texture >= 0) textWidth += 15;
     const int_t availableWidth = std::max<int_t>(0, screenWidth - LEGACY_HINT_MARGIN * 2);
     int_t gap = LEGACY_HINT_GAP;
     if (visible > 1 && textWidth + gap * (visible - 1) > availableWidth)
@@ -167,7 +180,7 @@ void rebuildRow(const GameSettings &settings, FontRenderer *font, PromptRow &row
         if (row.texts[i].empty())
             continue;
         row.x[i] = x;
-        x += font->getStringWidth(row.texts[i]) + gap;
+        x += font->getStringWidth(row.texts[i]) + gap + (row.icons[i].texture >= 0 ? 15 : 0);
     }
 }
 
@@ -177,7 +190,7 @@ void emitRow(FontRenderer *font, const PromptRow &row)
     {
         if (row.texts[i].empty())
             continue;
-        font->drawStringWithShadow(row.texts[i], row.x[i], row.y, 0xffffff);
+        font->drawStringWithShadow(row.texts[i], row.x[i] + (row.icons[i].texture >= 0 ? 15 : 0), row.y, 0xffffff);
     }
 }
 
@@ -212,6 +225,9 @@ void drawRow(FontRenderer *font, PromptRow &row)
     if (visiblePromptCount(row.texts, PROMPT_COUNT) <= 0)
         return;
 
+    renderDisable(RenderCapability::DepthTest);
+    renderEnable(RenderCapability::Texture2D);
+
 #if PLATFORM_PS2 && PS2_CACHE_LEGACY_HINT_TEXT
     if (!row.capturedValid)
         (void)captureRow(font, row);
@@ -235,7 +251,10 @@ void LegacyControlTooltipHud::render(Minecraft *mc, int_t screenWidth, int_t scr
     const GameSettings &settings = *mc->gameSettings;
     FontRenderer *font = mc->fontRenderer;
 
-    if (!refreshRowKey(settings, font, s_row, screenWidth, screenHeight))
+    const int playerIndex = (mc->isSplitScreenActive() && mc->thePlayer == mc->thePlayer2) ? 1 : 0;
+    PromptRow &s_row = s_rows[playerIndex];
+
+    if (!refreshRowKey(mc, settings, font, s_row, screenWidth, screenHeight))
     {
         rebuildRow(settings, font, s_row, screenWidth, screenHeight);
 #if PLATFORM_PS2 && PS2_CACHE_LEGACY_HINT_TEXT
@@ -243,5 +262,7 @@ void LegacyControlTooltipHud::render(Minecraft *mc, int_t screenWidth, int_t scr
 #endif
     }
 
+    for (int_t i = 0; i < PROMPT_COUNT; ++i)
+        if (!s_row.texts[i].empty() && s_row.icons[i].texture >= 0) drawControlIcon(mc, s_row.icons[i], s_row.x[i], s_row.y - 2);
     drawRow(font, s_row);
 }

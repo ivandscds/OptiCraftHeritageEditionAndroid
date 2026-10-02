@@ -1,7 +1,10 @@
+#include "net/minecraft/src/UiStrings.h"
 #include "LegacyHelpOptions.h"
 
 #include "LegacyGuiButton.h"
 #include "LegacyControlsScreen.h"
+#include "LegacyControllerLayoutScreen.h"
+#include "platform/PlatformConfig.h"
 #include "LegacyHeritageOptions.h"
 #include "LegacyLanguageOptions.h"
 #include "LegacyMainMenuLayout.h"
@@ -34,13 +37,13 @@ void LegacyHelpOptions::initGui()
     configureLegacyLayout(6, false);
     const LegacyMainMenuLayout layout = legacyMainMenuLayout(width, height, 6);
     const int_t stride = layout.buttonHeight + layout.buttonSpacing;
-    const char *labels[] = {
-        "Video",
-        "Controls",
-        "Language",
-        "OptiCraft Options",
-        "View",
-        "Back"
+    const std::string labels[] = {
+        uiText("Video"),
+        uiText("Controls"),
+        uiText("Language"),
+        uiText("OptiCraft Options"),
+        uiText("View"),
+        uiText("Back")
     };
     const int_t ids[] = {
         BUTTON_VIDEO,
@@ -70,7 +73,11 @@ void LegacyHelpOptions::actionPerformed(GuiButton *button)
         mc->displayGuiScreen(new LegacyVideoOptions(this, settings, backgroundMode));
         return;
     case BUTTON_CONTROLS:
+#if PLATFORM_PS2
+        mc->displayGuiScreen(new LegacyControllerLayoutScreen(this, settings, backgroundMode));
+#else
         mc->displayGuiScreen(new LegacyControlsScreen(this, settings, backgroundMode));
+#endif
         return;
     case BUTTON_LANGUAGE:
         mc->displayGuiScreen(new LegacyLanguageOptions(this, settings, backgroundMode));

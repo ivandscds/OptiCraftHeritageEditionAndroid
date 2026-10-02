@@ -18,7 +18,12 @@ bool WorldGenTallGrass::generate(World *world, Random &random, int_t i, int_t j,
 	for (int_t l = 0; ((l = world->getBlockId(i, j, k)) == 0 || l == Block::leaves->blockID) && j > 0; j--)
 	{
 	}
-	for (int_t i1 = 0; i1 < PLATFORM_TALL_GRASS_PLACEMENT_ATTEMPTS; i1++)
+#if PLATFORM_CONSOLE_LOW || PLATFORM_WII
+	const int_t maxAttempts = PLATFORM_TALL_GRASS_PLACEMENT_ATTEMPTS;
+#else
+	const int_t maxAttempts = (world != nullptr && world->isLimitedWorld()) ? 64 : PLATFORM_TALL_GRASS_PLACEMENT_ATTEMPTS;
+#endif
+	for (int_t i1 = 0; i1 < maxAttempts; i1++)
 	{
 		int_t j1 = random.nextIntOffset(i, 8);
 		int_t k1 = random.nextIntOffset(j, 4);

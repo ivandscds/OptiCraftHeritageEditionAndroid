@@ -44,7 +44,7 @@ message(STATUS "PS2 build: PS2SDK=${PS2SDK}")
 
 # --- PS2 feature options (mirrors the reference build) ------------------------
 option(PS2_NTSC_MODE "Use runtime NTSC/PAL interlaced SD mode instead of 480P (recommended for real PS2/OPL)" ON)
-option(PS2_ENABLE_VU1_TERRAIN "Build the experimental direct VIF1/VU1/XGKICK terrain path" OFF)
+option(PS2_ENABLE_VU1_TERRAIN "Build the experimental direct VIF1/VU1/XGKICK terrain path" ON)
 option(PS2_ENABLE_VU0_MESH_FINALIZE "Use asynchronous VIF0/VU0 micro mode for terrain mesh finalization" ON)
 # ON: the UV (non-STQ) path interpolates texture coordinates affinely in
 # screen space, so any surface at an angle — water planes, mob skins, items
@@ -53,9 +53,16 @@ option(PS2_ENABLE_VU0_MESH_FINALIZE "Use asynchronous VIF0/VU0 micro mode for te
 # The STQ path is also faster: it batches 64 triangles per GIF packet.
 option(PS2_ENABLE_PERSPECTIVE_TEXTURES "Use PS2 STQ perspective-correct texture mapping in the fast draw path" ON)
 option(PS2_ENABLE_PSMT8 "Store game textures as 8-bit palettized PSMT8 + CT16 CLUT (halves texture VRAM/RAM)" ON)
+option(PS2_MERGE_WATER_TOPS "Experimental bounded still-water surface merging" OFF)
 option(PS2_RENDER_STATS "Enable verbose PS2 render statistics counters" OFF)
+option(PS2_OPTIMIZATION_VALIDATION "Enable low-overhead counters for validating PS2 optimization paths" OFF)
 option(PS2_REMOTE_DEBUG "Enable hardware remote debugging through ps2link/ps2client" OFF)
 option(PS2_ENABLE_SOUND "Enable PS2 audsrv ADPCM sound backend" ON)
+option(PS2_ENABLE_NETWORK "Enable PS2 TCP multiplayer through PS2SDK ps2ip/SMAP" ON)
+
+if(PS2_OPTIMIZATION_VALIDATION AND MC_LOG_LEVEL LESS 1)
+    message(WARNING "PS2_OPTIMIZATION_VALIDATION needs MC_LOG_LEVEL=1 or higher to emit summaries")
+endif()
 
 if(PS2_REMOTE_DEBUG AND CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "PS2_REMOTE_DEBUG requires a symbol-preserving build type; use the ps2-remote-debug preset")
@@ -85,6 +92,14 @@ set_source_files_properties(${PS2_MINIZIP_SOURCES}
 mcbeta_exclude_remote_stats_sources(PS2_SOURCES)
 
 mcbeta_select_platform_backends(PS2_SOURCES PS2 GS_PS2 PS2)
+
+# JavaNetwork.cpp is the desktop/fallback implementation. When networking is
+# enabled on PS2, select the native ps2ip socket backend instead.
+if(PS2_ENABLE_NETWORK)
+    mcbeta_exclude_sources(PS2_SOURCES "[/\\]java[/\\]JavaNetwork\\.cpp$")
+else()
+    mcbeta_exclude_sources(PS2_SOURCES "[/\\]ps2[/\\]JavaNetwork_ps2\\.cpp$")
+endif()
 
 # VU microprograms use the same dvp-as tool. Keep discovery shared so enabling
 # either backend does not duplicate toolchain probing. Both paths retain CPU/VU0
@@ -154,6 +169,19 @@ set(PS2_REQUIRED_SHIMS
     # Supplies __atomic_exchange_4; -mno-llsc leaves it as an unresolved libcall.
     "${CMAKE_SOURCE_DIR}/src/ps2/system/Ps2Atomic.c"
 )
+
+# libps2ip can change .data ordering enough for PS2SDK libkernel's errno archive
+# member to land only 2-byte aligned. errno is a 32-bit int, so provide a known-
+# aligned application definition for networking builds on the EE.
+if(PS2_ENABLE_NETWORK)
+    set(_PS2_ALIGNED_ERRNO_SOURCE
+        "${CMAKE_SOURCE_DIR}/src/ps2/system/Ps2AlignedErrno.c")
+    list(APPEND PS2_REQUIRED_SHIMS "${_PS2_ALIGNED_ERRNO_SOURCE}")
+    # Preserve the dedicated section and explicit alignment through the final link.
+    set_source_files_properties("${_PS2_ALIGNED_ERRNO_SOURCE}"
+        PROPERTIES COMPILE_OPTIONS "-fno-lto")
+endif()
+
 foreach(_ps2_shim IN LISTS PS2_REQUIRED_SHIMS)
     list(REMOVE_ITEM PS2_SOURCES "${_ps2_shim}")
     list(APPEND PS2_SOURCES "${_ps2_shim}")
@@ -299,13 +327,16 @@ target_compile_definitions(OptiCraft PRIVATE
     "_EE"
     "PS2_PLATFORM"
     "NO_EGL"
-    "NO_NETWORK"
+    $<$<NOT:$<BOOL:${PS2_ENABLE_NETWORK}>>:NO_NETWORK>
+    $<$<BOOL:${PS2_ENABLE_NETWORK}>:PS2_ENABLE_NETWORK=1>
     $<$<BOOL:${PS2_NTSC_MODE}>:PS2_NTSC_MODE>
     $<$<BOOL:${PS2_VU1_TERRAIN_ACTIVE}>:PS2_ENABLE_VU1_TERRAIN>
     $<$<BOOL:${PS2_VU0_MESH_FINALIZE_ACTIVE}>:PS2_ENABLE_VU0_MESH_FINALIZE>
     $<$<BOOL:${PS2_ENABLE_PERSPECTIVE_TEXTURES}>:PS2_ENABLE_PERSPECTIVE_TEXTURES>
     $<$<BOOL:${PS2_ENABLE_PSMT8}>:PS2_ENABLE_PSMT8>
     $<$<BOOL:${PS2_RENDER_STATS}>:PS2_RENDER_STATS>
+    $<$<BOOL:${PS2_OPTIMIZATION_VALIDATION}>:PS2_OPTIMIZATION_VALIDATION>
+    $<$<BOOL:${PS2_MERGE_WATER_TOPS}>:PS2_MERGE_WATER_TOPS>
     $<$<BOOL:${PS2_REMOTE_DEBUG}>:PS2_REMOTE_DEBUG>
     MC_LOG_LEVEL=${MC_LOG_LEVEL}
 )
@@ -327,6 +358,8 @@ target_include_directories(OptiCraft PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/src/pc"
     "${CMAKE_SOURCE_DIR}/src/ps2"
+    "${CMAKE_SOURCE_DIR}/src/net/minecraft/src"
+    "${CMAKE_SOURCE_DIR}/src/mods"
     "${CMAKE_SOURCE_DIR}/external/stb"
     "${CMAKE_SOURCE_DIR}/external/miniaudio"
     "${CMAKE_SOURCE_DIR}/external/zlib/contrib/minizip"
@@ -347,8 +380,17 @@ target_link_libraries(OptiCraft
     patches pad mc vux
     $<$<BOOL:${PS2_ENABLE_SOUND}>:audsrv>
     z
+    $<$<AND:$<BOOL:${PS2_ENABLE_NETWORK}>,$<BOOL:${PS2_REMOTE_DEBUG}>>:ps2ips>
+    $<$<AND:$<BOOL:${PS2_ENABLE_NETWORK}>,$<NOT:$<BOOL:${PS2_REMOTE_DEBUG}>>>:ps2ip>
+    $<$<AND:$<BOOL:${PS2_ENABLE_NETWORK}>,$<NOT:$<BOOL:${PS2_REMOTE_DEBUG}>>>:netman>
     kernel c
 )
+
+if(PS2_ENABLE_NETWORK)
+    # Make the application-owned aligned definition satisfy errno before libkernel.a
+    # is scanned, and keep it alive when --gc-sections is enabled.
+    target_link_options(OptiCraft PRIVATE "-Wl,--undefined=errno")
+endif()
 
 target_link_options(OptiCraft PRIVATE
     "-T${_PS2_ACTIVE_LINKFILE}"
@@ -365,8 +407,10 @@ target_link_options(OptiCraft PRIVATE
 )
 
 # Mirror the desktop build's predictable output location.
+set(PS2_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/ps2" CACHE PATH
+    "PS2 executable and USB staging output directory")
 set_target_properties(OptiCraft PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/ps2"
+    RUNTIME_OUTPUT_DIRECTORY "${PS2_OUTPUT_DIR}"
 )
 
 # --- Post-link validation, size pass and packaging -----------------------------
@@ -387,7 +431,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT PS2_OBJCOPY)
     message(FATAL_ERROR "PS2 build: objcopy is required to strip and package a Release ELF")
 endif()
 
-set(PS2_USB_ROOT "${CMAKE_SOURCE_DIR}/bin/ps2/usb")
+set(PS2_USB_ROOT "${PS2_OUTPUT_DIR}/usb")
 set(PS2_APP_DIR  "${PS2_USB_ROOT}/MCBETA")
 set(_PS2_ELF_VALIDATOR "${CMAKE_SOURCE_DIR}/cmake/ps2_validate_elf.cmake")
 set(_PS2_LINKED_SIZE_REPORT "${CMAKE_BINARY_DIR}/OptiCraft.linked-size.txt")
@@ -447,24 +491,15 @@ add_custom_target(ps2-data
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/data/resources_ps2" "${PS2_APP_DIR}/data/resources"
 
-    # Audio that is deliberately not shipped. This used to be about ELF size;
-    # now the cost is SPU2 memory, which is 2 MB and has no eviction here --
-    # ps2GetAdpcmSample() uploads a sample on first play and never unloads it.
-    #
-    #     newsound/ambient   1141 KB   cave ambience + rain/thunder beds
-    #     sound/loops         ~2 MB    C418 ocean/cave/bird loops
-    #
-    # Neither is reachable often enough to be worth that budget:
-    # World::updateBlocksAndPlayCaveSounds reseeds its counter to 6000-18000
-    # ticks (5-15 minutes), and PS2_SKIP_RAIN_SNOW already removes the weather
-    # the rain beds accompany. A missing sound is a graceful no-op, so this is
-    # now purely a deployment choice: copy the two folders into the install's
-    # data/resources tree and they play, at the cost of SPU2 space for the rest
-    # of the session.
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${PS2_APP_DIR}/data/resources/newsound/ambient"
+    # Keep rain/thunder now that PS2 precipitation is enabled. Removing all
+    # of ambient silently removed their sound-pool entries from assets.pak.
+    # Rain's four short samples total ~100 KB and are loaded on demand.
+    # Cave ambience and the much larger legacy loops remain excluded: audsrv's
+    # SPU2 sample cache has no eviction, so those can exhaust its 2 MB budget.
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${PS2_APP_DIR}/data/resources/newsound/ambient/cave"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${PS2_APP_DIR}/data/resources/sound/loops"
 
-    # Last, so the two removals above are already reflected in the listing.
+    # Generate the listing after the exclusions above.
     # Ps2ResourceManifest reads this instead of enumerating data/resources at
     # runtime; see the header of ps2_resource_manifest.cmake for why a disc
     # cannot be asked what it contains.
@@ -483,6 +518,7 @@ if(PS2_ENABLE_SOUND)
     set(_AUDSRV_IRX "${PS2SDK}/iop/irx/audsrv.irx")
     if(EXISTS "${_AUDSRV_IRX}")
         add_custom_command(TARGET OptiCraft POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${PS2_APP_DIR}/data/irx"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${_AUDSRV_IRX}" "${PS2_APP_DIR}/data/irx/audsrv.irx"
             COMMENT "Packaging ${PS2_APP_DIR}/data/irx/audsrv.irx"
@@ -491,4 +527,32 @@ if(PS2_ENABLE_SOUND)
     else()
         message(WARNING "PS2_ENABLE_SOUND is ON but audsrv.irx was not found: ${_AUDSRV_IRX}")
     endif()
+endif()
+
+# Normal PS2 TCP multiplayer owns the EE-side ps2ip path and therefore ships
+# the Ethernet/NETMAN modules it initializes. Remote-debug builds reuse the
+# IOP-side PS2IP-NM stack already started by ps2link, but still need ps2ips.irx:
+# that module is the RPC server which exposes the resident IOP sockets to the
+# EE-side libps2ips client.
+if(PS2_ENABLE_NETWORK)
+    if(PS2_REMOTE_DEBUG)
+        set(_PS2_NET_IRX_LIST ps2ips)
+    else()
+        set(_PS2_NET_IRX_LIST ps2dev9 netman smap)
+    endif()
+
+    foreach(_PS2_NET_IRX IN LISTS _PS2_NET_IRX_LIST)
+        set(_PS2_NET_IRX_SOURCE "${PS2SDK}/iop/irx/${_PS2_NET_IRX}.irx")
+        if(NOT EXISTS "${_PS2_NET_IRX_SOURCE}")
+            message(FATAL_ERROR "PS2_ENABLE_NETWORK requires ${_PS2_NET_IRX_SOURCE}")
+        endif()
+        add_custom_command(TARGET OptiCraft POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${PS2_APP_DIR}/data/irx"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_PS2_NET_IRX_SOURCE}" "${PS2_APP_DIR}/data/irx/${_PS2_NET_IRX}.irx"
+            COMMENT "Packaging ${PS2_APP_DIR}/data/irx/${_PS2_NET_IRX}.irx"
+            VERBATIM
+        )
+    endforeach()
+    unset(_PS2_NET_IRX_LIST)
 endif()

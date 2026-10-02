@@ -293,10 +293,17 @@ void run(Minecraft* minecraft)
 
     LogoResult first = playLegacyLogo(minecraft, "/legacy/logo1.png", musicStarted);
     if (first == LogoResult::Skipped)
+    {
+        if (!musicStarted)
+            startLegacyCalmMusic(minecraft);
         return;
+    }
 
     const LogoResult second = playLegacyLogo(minecraft, "/legacy/logo2.png", musicStarted);
     (void)second;
+
+    if (!musicStarted)
+        startLegacyCalmMusic(minecraft);
 }
 
 } // namespace LegacyStartup

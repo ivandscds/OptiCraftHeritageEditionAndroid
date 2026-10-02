@@ -1,3 +1,4 @@
+#include "net/minecraft/src/UiStrings.h"
 #include "GuiMainMenu.h"
 #include "platform/Log.h"
 #include "platform/PlatformConfig.h"
@@ -12,6 +13,7 @@
 #include "GuiSelectWorld.h"
 #include "GuiMultiplayer.h"
 #include "GuiTexturePacks.h"
+#include "mods/GuiMods.h"
 #include "StringTranslate.h"
 #include "Tessellator.h"
 #include "MathHelper.h"
@@ -27,6 +29,7 @@
 #include "net/minecraft/src/legacy/LegacyMainMenuLayout.h"
 #include "net/minecraft/src/legacy/LegacyMenuHints.h"
 #include "net/minecraft/src/legacy/LegacyMenuNavigation.h"
+#include "skin/GuiSkinSelector.h"
 #include "net/minecraft/src/legacy/LegacyUiAssets.h"
 #include "net/minecraft/src/legacy/LegacyPanorama.h"
 #include "net/minecraft/src/legacy/LegacySceneLayout.h"
@@ -245,6 +248,11 @@ void GuiMainMenu::activateLegacySelection()
 
 void GuiMainMenu::initGui()
 {
+    // arregla el bug del f3 al salir del mundo
+    // sin desactivar el debuginfo, ahora al llegar aqui lo desactiva
+    if (mc->gameSettings->showDebugInfo)
+        mc->gameSettings->showDebugInfo = false;
+
     if (viewportTexture >= 0)
         mc->renderEngine->deleteTexture(viewportTexture);
     viewportTexture = -1;
@@ -270,6 +278,9 @@ void GuiMainMenu::initGui()
         else if (month == 1  && day == 1)  splashText = "Happy new year!";
     }
 
+    if (mc != nullptr && mc->sndManager != nullptr)
+        mc->sndManager->playRandomMusicIfReady();
+
     StringTranslate *tr = StringTranslate::getInstance();
     if (mc->gameSettings != nullptr && mc->gameSettings->legacyUI)
     {
@@ -284,22 +295,23 @@ void GuiMainMenu::initGui()
         return;
     }
 
-    const int_t y = height / 4 + 48;
+    const int_t y = height / 4 + 40;
     controlList.push_back(new GuiButton(1, width / 2 - 100, y, tr->translateKey("menu.singleplayer")));
     controlList.push_back(multiplayerButton = new GuiButton(2, width / 2 - 100, y + 24, tr->translateKey("menu.multiplayer")));
-    controlList.push_back(new GuiButton(3, width / 2 - 100, y + 48, tr->translateKey("menu.mods")));
+    controlList.push_back(new GuiButton(3, width / 2 - 100, y + 48, uiText("Mods")));
+    controlList.push_back(new GuiButton(6, width / 2 - 100, y + 72, "Skins"));
 
     if (mc->hideQuitButton)
     {
-        controlList.push_back(new GuiButton(0, width / 2 - 100, y + 72, tr->translateKey("menu.options")));
+        controlList.push_back(new GuiButton(0, width / 2 - 100, y + 96, tr->translateKey("menu.options")));
     }
     else
     {
-        controlList.push_back(new GuiButton(0, width / 2 - 100, y + 84, 98, 20, tr->translateKey("menu.options")));
-        controlList.push_back(new GuiButton(4, width / 2 + 2, y + 84, 98, 20, tr->translateKey("menu.quit")));
+        controlList.push_back(new GuiButton(0, width / 2 - 100, y + 96, 98, 20, tr->translateKey("menu.options")));
+        controlList.push_back(new GuiButton(4, width / 2 + 2, y + 96, 98, 20, tr->translateKey("menu.quit")));
     }
 
-    controlList.push_back(new GuiButtonLanguage(5, width / 2 - 124, y + 84));
+    controlList.push_back(new GuiButtonLanguage(5, width / 2 - 124, y + 96));
 #if !PLATFORM_PS2
     if (mc->session == nullptr)
         multiplayerButton->enabled = false;
@@ -330,7 +342,8 @@ void GuiMainMenu::actionPerformed(GuiButton *button)
             mc->displayGuiScreen(new GuiSelectWorld(this));
     }
     if (button->id == 2) mc->displayGuiScreen(new GuiMultiplayer(this));
-    if (button->id == 3) mc->displayGuiScreen(new GuiTexturePacks(this));
+    if (button->id == 3) mc->displayGuiScreen(new GuiMods(this));
+    if (button->id == 6) mc->displayGuiScreen(new GuiSkinSelector(this));
     if (button->id == 4) mc->shutdown();
 }
 
@@ -598,7 +611,7 @@ void GuiMainMenu::drawScreen(int_t mouseX, int_t mouseY, float_t partialTick)
     else
     {
         syncLegacySelection();
-        drawLegacyMenuHints(fontRenderer, width, height, false);
+        drawLegacyMenuHints(mc, width, height, false);
     }
 
     GuiScreen::drawScreen(mouseX, mouseY, partialTick);

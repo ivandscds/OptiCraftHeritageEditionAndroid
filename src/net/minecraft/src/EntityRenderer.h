@@ -64,6 +64,7 @@ public:
     // segun gameSettings.ofBrightness. Llamado al cambiar el slider y al cambiar de mundo.
     void updateWorldLightLevels();
     void renderWorld(float partialTicks, int64_t renderTimeLimitNano);
+    void renderSplitScreen(float partialTicks, int64_t renderTimeLimitNano);
     void setupOverlayRendering();
     void disableLightmap(double partialTicks);
     void enableLightmap(double partialTicks);
@@ -145,7 +146,7 @@ private:
     float fogColorBlue;
     float fogColor2;  // Valor anterior de niebla
     float fogColor1;  // Valor actual de niebla
-    float fovModifierHand;
+    float fovModifierHand[2];
     int lightmapTexture;
     std::vector<int_t> lightmapColors;
     bool lightmapUpdateNeeded;
@@ -160,7 +161,7 @@ private:
     float torchFlickerDX;
     float torchFlickerY;
     float torchFlickerDY;
-    float fovModifierHandPrev;
+    float fovModifierHandPrev[2];
     
     // Contador de actualizaciones del renderer
     int rendererUpdateCount;
@@ -168,6 +169,9 @@ private:
     
     // Renderer de items en mano
     ItemRenderer* itemRenderer;
+    int viewportOffsetX = 0;
+    int viewportOffsetY = 0;
+    float currentProjectionAspect = 1.3333334f;
 
     // OptiFine: ultimo worldProvider para el que se aplico el brillo; cuando cambia
     // (p.ej. cambio de dimension) se vuelve a llamar a updateWorldLightLevels().

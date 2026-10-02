@@ -19,6 +19,8 @@ std::uint32_t mapTextButtons(unsigned short bits)
     if (bits & PS2_PAD_TRIANGLE) value |= PLATFORM_TEXT_SHIFT;
     if (bits & PS2_PAD_START) value |= PLATFORM_TEXT_ENTER;
     if (bits & PS2_PAD_CIRCLE) value |= PLATFORM_TEXT_CLOSE;
+    if (bits & PS2_PAD_L1) value |= PLATFORM_TEXT_PREV_PAGE;
+    if (bits & PS2_PAD_R1) value |= PLATFORM_TEXT_NEXT_PAGE;
     return value;
 }
 }
@@ -81,7 +83,10 @@ void platformSetMenuCursor(int x, int y)
 const PlatformKeyboardHints& platformKeyboardHints()
 {
     static const PlatformKeyboardHints hints = {
-        { "X:type  Sq:del  Tri:shift  Sel:space  Start:ok  O:close", nullptr, nullptr }, 1
+        {
+            "X:type  Sq:del  Tri:shift  Sel:space  Start:ok  O:close",
+            "Right stick: move keyboard", nullptr
+        }, 2
     };
     return hints;
 }

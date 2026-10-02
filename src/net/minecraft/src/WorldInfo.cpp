@@ -39,13 +39,29 @@ WorldInfo::WorldInfo(NBTTagCompound *nbttagcompound)
 	raining = nbttagcompound->getBoolean("raining");
 	thunderTime = nbttagcompound->getInteger("thunderTime");
 	thundering = nbttagcompound->getBoolean("thundering");
+	if (nbttagcompound->hasKey("worldSizeType"))
+	{
+		worldSizeType = nbttagcompound->getInteger("worldSizeType");
+		limitedWorld = (worldSizeType != 0);
+	}
+	else
+	{
+		limitedWorld = nbttagcompound->hasKey("limitedWorld") ? nbttagcompound->getBoolean("limitedWorld") : false;
+		worldSizeType = limitedWorld ? 1 : 0;
+	}
 	playerTag = nullptr;
+	player2Tag = nullptr;
 	dimension = 0;
 	if (nbttagcompound->hasKey("Player"))
 	{
 		NBTTagCompound *sourcePlayerTag = nbttagcompound->getCompoundTag("Player");
 		playerTag = static_cast<NBTTagCompound *>(sourcePlayerTag->copy());
 		dimension = playerTag->getInteger("Dimension");
+	}
+	if (nbttagcompound->hasKey("Player2"))
+	{
+		NBTTagCompound *sourcePlayer2Tag = nbttagcompound->getCompoundTag("Player2");
+		player2Tag = static_cast<NBTTagCompound *>(sourcePlayer2Tag->copy());
 	}
 }
 
@@ -62,6 +78,7 @@ WorldInfo::WorldInfo(long_t l, const jstring &s)
 	lastTimePlayed = 0;
 	sizeOnDisk = 0;
 	playerTag = nullptr;
+	player2Tag = nullptr;
 	dimension = 0;
 	saveVersion = 0;
 	gameType = 0;
@@ -71,6 +88,8 @@ WorldInfo::WorldInfo(long_t l, const jstring &s)
 	rainTime = 0;
 	thundering = false;
 	thunderTime = 0;
+	limitedWorld = false;
+	worldSizeType = 0;
 }
 
 WorldInfo::WorldInfo(WorldSettings *settings, const jstring &s)
@@ -81,6 +100,8 @@ WorldInfo::WorldInfo(WorldSettings *settings, const jstring &s)
 	gameType = settings != nullptr ? settings->getGameType() : 0;
 	mapFeaturesEnabled = settings == nullptr || settings->isMapFeaturesEnabled();
 	hardcore = settings != nullptr && settings->getHardcoreEnabled();
+	worldSizeType = settings != nullptr ? settings->getWorldSizeType() : 0;
+	limitedWorld = (worldSizeType != 0);
 	levelName = s;
 	spawnX = 0;
 	spawnY = 0;
@@ -89,6 +110,7 @@ WorldInfo::WorldInfo(WorldSettings *settings, const jstring &s)
 	lastTimePlayed = 0;
 	sizeOnDisk = 0;
 	playerTag = nullptr;
+	player2Tag = nullptr;
 	dimension = 0;
 	saveVersion = 0;
 	raining = false;
@@ -104,6 +126,8 @@ WorldInfo::WorldInfo(WorldInfo *worldinfo)
 	gameType = worldinfo->gameType;
 	mapFeaturesEnabled = worldinfo->mapFeaturesEnabled;
 	hardcore = worldinfo->hardcore;
+	limitedWorld = worldinfo->limitedWorld;
+	worldSizeType = worldinfo->worldSizeType;
 	spawnX = worldinfo->spawnX;
 	spawnY = worldinfo->spawnY;
 	spawnZ = worldinfo->spawnZ;
@@ -112,6 +136,9 @@ WorldInfo::WorldInfo(WorldInfo *worldinfo)
 	sizeOnDisk = worldinfo->sizeOnDisk;
 	playerTag = worldinfo->playerTag != nullptr
 		? static_cast<NBTTagCompound *>(worldinfo->playerTag->copy())
+		: nullptr;
+	player2Tag = worldinfo->player2Tag != nullptr
+		? static_cast<NBTTagCompound *>(worldinfo->player2Tag->copy())
 		: nullptr;
 	dimension = worldinfo->dimension;
 	levelName = worldinfo->levelName;
@@ -126,28 +153,45 @@ WorldInfo::~WorldInfo()
 {
 	delete playerTag;
 	playerTag = nullptr;
+	delete player2Tag;
+	player2Tag = nullptr;
 }
 
 NBTTagCompound *WorldInfo::getNBTTagCompound()
 {
 	NBTTagCompound *nbttagcompound = new NBTTagCompound();
-	updateTagCompound(nbttagcompound, playerTag);
+	updateTagCompound(nbttagcompound, playerTag, player2Tag);
 	return nbttagcompound;
 }
 
 NBTTagCompound *WorldInfo::getNBTTagCompoundWithPlayer(const std::vector<EntityPlayer *> &list)
 {
 	NBTTagCompound *nbttagcompound = new NBTTagCompound();
-	EntityPlayer *entityplayer = nullptr;
+	EntityPlayer *entityplayer1 = nullptr;
+	EntityPlayer *entityplayer2 = nullptr;
 	NBTTagCompound *nbttagcompound1 = nullptr;
-	if (!list.empty())
-		entityplayer = list[0];
-	if (entityplayer != nullptr)
+	NBTTagCompound *nbttagcompound2 = nullptr;
+	for (EntityPlayer *p : list)
+	{
+		if (p == nullptr)
+			continue;
+		if (p->username == "Player 2")
+			entityplayer2 = p;
+		else if (entityplayer1 == nullptr)
+			entityplayer1 = p;
+	}
+
+	if (entityplayer1 != nullptr)
 	{
 		nbttagcompound1 = new NBTTagCompound();
-		entityplayer->writeToNBT(nbttagcompound1);
+		entityplayer1->writeToNBT(nbttagcompound1);
 	}
-	updateTagCompound(nbttagcompound, nbttagcompound1);
+	if (entityplayer2 != nullptr)
+	{
+		nbttagcompound2 = new NBTTagCompound();
+		entityplayer2->writeToNBT(nbttagcompound2);
+	}
+	updateTagCompound(nbttagcompound, nbttagcompound1, nbttagcompound2);
 	return nbttagcompound;
 }
 
@@ -156,7 +200,7 @@ NBTTagCompound *WorldInfo::getNBTTagCompoundWithPlayers(const std::vector<Entity
 	return getNBTTagCompoundWithPlayer(list);
 }
 
-void WorldInfo::updateTagCompound(NBTTagCompound *nbttagcompound, NBTTagCompound *nbttagcompound1)
+void WorldInfo::updateTagCompound(NBTTagCompound *nbttagcompound, NBTTagCompound *nbttagcompound1, NBTTagCompound *nbttagcompound2)
 {
 	nbttagcompound->setLong("RandomSeed", randomSeed);
 	if (terrainType != nullptr)
@@ -179,12 +223,33 @@ void WorldInfo::updateTagCompound(NBTTagCompound *nbttagcompound, NBTTagCompound
 	nbttagcompound->setInteger("thunderTime", thunderTime);
 	nbttagcompound->setBoolean("thundering", thundering);
 	nbttagcompound->setBoolean("hardcore", hardcore);
+	nbttagcompound->setBoolean("limitedWorld", worldSizeType != 0);
+	nbttagcompound->setInteger("worldSizeType", worldSizeType);
 	if (nbttagcompound1 != nullptr)
 	{
 		if (nbttagcompound1 == playerTag)
 			nbttagcompound->setCompoundTag("Player", static_cast<NBTTagCompound *>(playerTag->copy()));
 		else
 			nbttagcompound->setCompoundTag("Player", nbttagcompound1);
+	}
+	else if (playerTag != nullptr)
+	{
+		nbttagcompound->setCompoundTag("Player", static_cast<NBTTagCompound *>(playerTag->copy()));
+	}
+
+	if (nbttagcompound2 != nullptr)
+	{
+		if (nbttagcompound2 == player2Tag)
+			nbttagcompound->setCompoundTag("Player2", static_cast<NBTTagCompound *>(player2Tag->copy()));
+		else
+		{
+			setPlayer2NBTTagCompound(static_cast<NBTTagCompound *>(nbttagcompound2->copy()));
+			nbttagcompound->setCompoundTag("Player2", nbttagcompound2);
+		}
+	}
+	else if (player2Tag != nullptr)
+	{
+		nbttagcompound->setCompoundTag("Player2", static_cast<NBTTagCompound *>(player2Tag->copy()));
 	}
 }
 
@@ -196,6 +261,7 @@ int_t WorldInfo::getSpawnZ() { return spawnZ; }
 long_t WorldInfo::getWorldTime() { return worldTime; }
 long_t WorldInfo::getSizeOnDisk() { return sizeOnDisk; }
 NBTTagCompound *WorldInfo::getPlayerNBTTagCompound() { return playerTag; }
+NBTTagCompound *WorldInfo::getPlayer2NBTTagCompound() { return player2Tag; }
 int_t WorldInfo::getDimension() { return dimension; }
 void WorldInfo::setSpawnX(int_t i) { spawnX = i; }
 void WorldInfo::setSpawnY(int_t i) { spawnY = i; }
@@ -208,6 +274,13 @@ void WorldInfo::setPlayerNBTTagCompound(NBTTagCompound *nbttagcompound)
 		return;
 	delete playerTag;
 	playerTag = nbttagcompound;
+}
+void WorldInfo::setPlayer2NBTTagCompound(NBTTagCompound *nbttagcompound)
+{
+	if (player2Tag == nbttagcompound)
+		return;
+	delete player2Tag;
+	player2Tag = nbttagcompound;
 }
 void WorldInfo::setSpawn(int_t i, int_t j, int_t k) { spawnX = i; spawnY = j; spawnZ = k; }
 void WorldInfo::setSpawnPosition(int_t i, int_t j, int_t k) { setSpawn(i, j, k); }
@@ -234,3 +307,31 @@ bool WorldInfo::isMapFeaturesEnabled() { return mapFeaturesEnabled; }
 bool WorldInfo::isHardcoreModeEnabled() { return hardcore; }
 WorldType *WorldInfo::getTerrainType() { return terrainType; }
 void WorldInfo::setTerrainType(WorldType *type) { terrainType = type != nullptr ? type : WorldType::DEFAULT; }
+bool WorldInfo::isLimitedWorld() const { return worldSizeType != 0; }
+void WorldInfo::setLimitedWorld(bool flag)
+{
+	limitedWorld = flag;
+	if (flag && worldSizeType == 0)
+		worldSizeType = 1;
+	else if (!flag)
+		worldSizeType = 0;
+}
+int_t WorldInfo::getWorldSizeType() const { return worldSizeType; }
+void WorldInfo::setWorldSizeType(int_t type)
+{
+	worldSizeType = type;
+	limitedWorld = (worldSizeType != 0);
+}
+int_t WorldInfo::getLimitedWorldMinChunk() const
+{
+	return worldSizeType == 2 ? -27 : -8;
+}
+int_t WorldInfo::getLimitedWorldMaxChunk() const
+{
+	return worldSizeType == 2 ? 26 : 7;
+}
+double WorldInfo::getLimitedWorldBoundary() const
+{
+	return worldSizeType == 2 ? 431.5 : 127.5;
+}
+

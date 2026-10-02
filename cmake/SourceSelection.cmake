@@ -12,6 +12,8 @@ function(mcbeta_collect_common_sources out_var)
         "${CMAKE_SOURCE_DIR}/src/external/*.c"
         "${CMAKE_SOURCE_DIR}/src/java/*.cpp"
         "${CMAKE_SOURCE_DIR}/src/java/*.c"
+        "${CMAKE_SOURCE_DIR}/src/mods/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/mods/*.c"
         "${CMAKE_SOURCE_DIR}/src/net/*.cpp"
         "${CMAKE_SOURCE_DIR}/src/net/*.c"
         "${CMAKE_SOURCE_DIR}/src/platform/*.cpp"
@@ -98,4 +100,20 @@ function(mcbeta_select_platform_backends list_var platform render_backend sound_
     mcbeta_select_backend(${list_var} platform TextureResidencyPolicy ${platform}
         "[/\\\\]platform[/\\\\]TextureResidencyPolicy_(PC|WII|PS2)\\.cpp$")
     set(${list_var} "${${list_var}}" PARENT_SCOPE)
+endfunction()
+
+# CI-injected aliases for the opticraft_* calls in CMakeLists.txt
+function(opticraft_collect_platform_sources out_var platform_dir)
+  mcbeta_collect_platform_sources(${out_var} ${platform_dir})
+  set(${out_var} ${${out_var}} PARENT_SCOPE)
+endfunction()
+
+function(opticraft_exclude_sources list_var)
+  mcbeta_exclude_sources(${list_var} ${ARGN})
+  set(${list_var} ${${list_var}} PARENT_SCOPE)
+endfunction()
+
+function(opticraft_select_platform_backends list_var platform render_backend sound_backend)
+  mcbeta_select_platform_backends(${list_var} ${platform} ${render_backend} ${sound_backend})
+  set(${list_var} ${${list_var}} PARENT_SCOPE)
 endfunction()

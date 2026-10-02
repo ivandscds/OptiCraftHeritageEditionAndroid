@@ -177,6 +177,13 @@ void NetClientHandler::processReadPackets()
     if (!disconnected)
     {
         netManager->processReadPackets();
+#if PLATFORM_PS2 && PLATFORM_MP_DEFERRED_CHUNKS
+        // Packet51 bursts can move dozens of compressed columns into the deferred
+        // cache in one dispatch. Trim once for the whole batch instead of doing a
+        // full cache victim search after every individual map packet.
+        if (worldClient != nullptr)
+            worldClient->finishDeferredChunkPacketBatch();
+#endif
     }
     netManager->wakeThreads();
 }
@@ -502,7 +509,7 @@ void NetClientHandler::handleEntityTeleport(Packet34EntityTeleport* packet)
     float yaw = (float)(packet->yaw * 360) / 256.0f;
     float pitch = (float)(packet->pitch * 360) / 256.0f;
     
-    entity->setPositionAndRotation2(posX, posY, posZ, yaw, pitch, 3);
+    worldClient->applyNetworkPosition(entity, posX, posY, posZ, yaw, pitch);
 }
 
 void NetClientHandler::handleEntityMovement(Packet30Entity* packet)
@@ -525,7 +532,7 @@ void NetClientHandler::handleEntityMovement(Packet30Entity* packet)
     float yaw = packet->rotating ? (float)(packet->yaw * 360) / 256.0f : entity->rotationYaw;
     float pitch = packet->rotating ? (float)(packet->pitch * 360) / 256.0f : entity->rotationPitch;
     
-    entity->setPositionAndRotation2(posX, posY, posZ, yaw, pitch, 3);
+    worldClient->applyNetworkPosition(entity, posX, posY, posZ, yaw, pitch);
 }
 
 void NetClientHandler::handleEntityHeadRotation(Packet35EntityHeadRotation* packet)
@@ -615,8 +622,11 @@ void NetClientHandler::handleMultiBlockChange(Packet52MultiBlockChange* packet)
     const int_t baseX = JavaArithmetic::intMul(packet->xPosition, 16);
     const int_t baseZ = JavaArithmetic::intMul(packet->zPosition, 16);
 
-#ifdef WII_PLATFORM
+#if PLATFORM_MP_DEFERRED_CHUNKS
     const bool keepChunk = worldClient->shouldKeepChunk(packet->xPosition, packet->zPosition);
+#if PLATFORM_PS2
+    const bool applyNow = keepChunk && worldClient->chunkExists(packet->xPosition, packet->zPosition);
+#endif
 #endif
 
     for (int_t i = 0; i < packet->size; ++i)
@@ -633,10 +643,15 @@ void NetClientHandler::handleMultiBlockChange(Packet52MultiBlockChange* packet)
         const int_t blockId = (blockData & 0x0fff) >> 4;
         const int_t metadata = blockData & 0xf;
 
-#ifdef WII_PLATFORM
+#if PLATFORM_MP_DEFERRED_CHUNKS
         worldClient->deferBlockChange(JavaArithmetic::intAdd(baseX, localX), y, JavaArithmetic::intAdd(baseZ, localZ), blockId, metadata);
+#if PLATFORM_PS2
+        if (!applyNow)
+            continue;
+#else
         if (!keepChunk)
             continue;
+#endif
 #endif
 
         worldClient->setBlockAndMetadataAndInvalidate(JavaArithmetic::intAdd(baseX, localX), y, JavaArithmetic::intAdd(baseZ, localZ), blockId, metadata);
@@ -646,15 +661,41 @@ void NetClientHandler::handleMultiBlockChange(Packet52MultiBlockChange* packet)
 void NetClientHandler::handleMapChunk(Packet51MapChunk* packet)
 {
     mapChunkCount++;
-#ifdef WII_PLATFORM
+#if PLATFORM_MP_DEFERRED_CHUNKS
     // Keep the initialize packet plus subsequent section deltas compressed for
-    // bounded client caches. This lets an evicted 1.2.5 column be reconstructed
+    // bounded console caches. This lets an evicted 1.2.5 column be reconstructed
     // without asking the server to resend a chunk it still considers loaded.
+    const bool keepChunk = worldClient->shouldKeepChunk(packet->xCh, packet->zCh);
+#if PLATFORM_PS2
+    // On PS2, only decode immediately when the real column is already resident
+    // (normal live block/section updates). Initial terrain stays compressed and
+    // is materialized by WorldClient::promoteDeferredChunks() under its per-tick
+    // budget instead of doing arbitrary zlib + chunk import work in network I/O.
+    Chunk *chunk = worldClient->getChunkFromChunkCoords(packet->xCh, packet->zCh);
+    const bool resident = chunk != nullptr && !chunk->isEmptyChunk();
+    if (keepChunk && resident && !packet->ensureDecompressed())
+    {
+        netManager->networkShutdown("disconnect.genericReason", {"Invalid compressed chunk data"});
+        return;
+    }
+#else
+    // Preserve the original deferred-chunk path on other bounded platforms.
+    if (keepChunk && !packet->ensureDecompressed())
+    {
+        netManager->networkShutdown("disconnect.genericReason", {"Invalid compressed chunk data"});
+        return;
+    }
+#endif
     worldClient->cacheCompressedChunk(
         packet->xCh, packet->zCh, packet->includeInitialize,
-        packet->yChMin, packet->yChMax, packet->copyCompressedData());
-    if (!worldClient->shouldKeepChunk(packet->xCh, packet->zCh))
+        packet->yChMin, packet->yChMax, packet->takeCompressedData());
+#if PLATFORM_PS2
+    if (!keepChunk || !resident)
         return;
+#else
+    if (!keepChunk)
+        return;
+#endif
 #endif
 
     worldClient->invalidateBlockReceiveRegion(
@@ -662,6 +703,7 @@ void NetClientHandler::handleMapChunk(Packet51MapChunk* packet)
         JavaArithmetic::intAdd(JavaArithmetic::intShl(packet->xCh, 4), 15), WorldHeight::HEIGHT,
         JavaArithmetic::intAdd(JavaArithmetic::intShl(packet->zCh, 4), 15));
 
+#if !(PLATFORM_PS2 && PLATFORM_MP_DEFERRED_CHUNKS)
     Chunk *chunk = worldClient->getChunkFromChunkCoords(packet->xCh, packet->zCh);
 
     // Packet50PreChunk normally creates the client chunk before the map data
@@ -673,6 +715,7 @@ void NetClientHandler::handleMapChunk(Packet51MapChunk* packet)
         worldClient->doPreChunk(packet->xCh, packet->zCh, true);
         chunk = worldClient->getChunkFromChunkCoords(packet->xCh, packet->zCh);
     }
+#endif
 
     if (chunk == nullptr || chunk->isEmptyChunk())
         return;
@@ -696,11 +739,18 @@ void NetClientHandler::handleMapChunk(Packet51MapChunk* packet)
 
 void NetClientHandler::handleBlockChange(Packet53BlockChange* packet)
 {
-#ifdef WII_PLATFORM
+#if PLATFORM_MP_DEFERRED_CHUNKS
 	worldClient->deferBlockChange(packet->xPosition, packet->yPosition,
 		packet->zPosition, packet->type, packet->metadata);
+#if PLATFORM_PS2
+	const int_t chunkX = JavaArithmetic::intShr(packet->xPosition, 4);
+	const int_t chunkZ = JavaArithmetic::intShr(packet->zPosition, 4);
+	if (!worldClient->shouldKeepChunk(chunkX, chunkZ) || !worldClient->chunkExists(chunkX, chunkZ))
+		return;
+#else
 	if (!worldClient->shouldKeepChunk(JavaArithmetic::intShr(packet->xPosition, 4), JavaArithmetic::intShr(packet->zPosition, 4)))
 		return;
+#endif
 #endif
     worldClient->setBlockAndMetadataAndInvalidate(
         packet->xPosition,
@@ -781,9 +831,12 @@ void NetClientHandler::handleCollect(Packet22Collect* packet)
         worldClient->playSoundAtEntity(collected, pickupSound, 0.2f,
             (rand.nextFloatDifference() * 0.7f + 1.0f) * 2.0f);
         
-        mc->effectRenderer->addEffect(new EntityPickupFX(
-            mc->theWorld, collected, collector, -0.5f
-        ));
+        if (mc != nullptr && mc->effectRenderer != nullptr && mc->theWorld != nullptr && collector != nullptr)
+        {
+            mc->effectRenderer->addEffect(new EntityPickupFX(
+                mc->theWorld, collected, collector, -0.5f
+            ));
+        }
         
         worldClient->removeEntityFromWorld(packet->collectedEntityId);
     }
@@ -831,11 +884,13 @@ void NetClientHandler::handleArmAnimation(Packet18Animation* packet)
     }
     else if (packet->animate == 6)
     {
-        mc->effectRenderer->addEffect(new EntityCrit2FX(mc->theWorld, entity));
+        if (mc != nullptr && mc->effectRenderer != nullptr && mc->theWorld != nullptr && entity != nullptr)
+            mc->effectRenderer->addEffect(new EntityCrit2FX(mc->theWorld, entity));
     }
     else if (packet->animate == 7)
     {
-        mc->effectRenderer->addEffect(new EntityCrit2FX(mc->theWorld, entity, "magicCrit"));
+        if (mc != nullptr && mc->effectRenderer != nullptr && mc->theWorld != nullptr && entity != nullptr)
+            mc->effectRenderer->addEffect(new EntityCrit2FX(mc->theWorld, entity, "magicCrit"));
     }
     // Animation 5 is intentionally ignored for EntityOtherPlayerMP in 1.2.5.
 }
@@ -1043,7 +1098,12 @@ Entity* NetClientHandler::getEntityByID(int entityId)
         return mc->thePlayer;
     }
     
-    return worldClient->getEntityByID(entityId);
+    Entity *entity = worldClient->getEntityByID(entityId);
+#if PLATFORM_PS2
+    MC_LOG_TRACE("net.entity", "lookup id=%d found=%d dead=%d attached=%d\n",
+        entityId, entity != nullptr, entity != nullptr && entity->isDead, entity != nullptr && entity->addedToChunk);
+#endif
+    return entity;
 }
 
 void NetClientHandler::handleHealth(Packet8UpdateHealth* packet)

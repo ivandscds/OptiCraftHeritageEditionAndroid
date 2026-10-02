@@ -1,3 +1,4 @@
+#include "net/minecraft/src/UiStrings.h"
 #include "GuiIngameMenu.h"
 #include "GuiButton.h"
 #include "GuiOptions.h"
@@ -35,6 +36,7 @@ GuiIngameMenu::GuiIngameMenu()
 #endif
 #if PLATFORM_PS2
 	, ps2PauseStartReleaseLatch(true)
+	, ps2PauseActionReleaseLatch(true)
 #endif
 {
 }
@@ -64,11 +66,11 @@ void GuiIngameMenu::initGui()
 			++row;
 		};
 
-		addLegacyButton(4, "Resume Game");
-		addLegacyButton(0, "Help & Options");
-		addLegacyButton(5, "Achievements");
-		addLegacyButton(6, "Statistics");
-		addLegacyButton(1, mc->isMultiplayerWorld() ? "Disconnect" : "Save & Quit");
+		addLegacyButton(4, uiText("Resume Game"));
+		addLegacyButton(0, uiText("Help & Options"));
+		addLegacyButton(5, uiText("Achievements"));
+		addLegacyButton(6, uiText("Statistics"));
+		addLegacyButton(1, mc->isMultiplayerWorld() ? uiText("Disconnect") : uiText("Save & Quit"));
 		hoveredControlIndex = -1;
 		syncLegacySelection();
 		return;
@@ -212,6 +214,15 @@ void GuiIngameMenu::handleSpecializedMenuInput()
 			ps2PauseStartReleaseLatch = false;
 	}
 
+	// Also latch Cross/Action so a jump or mine press in gameplay does not
+	// immediately trigger the selected menu option upon opening pause.
+	if (ps2PauseActionReleaseLatch)
+	{
+		pressed &= ~PLATFORM_TEXT_TYPE;
+		if ((pad.held & PLATFORM_TEXT_TYPE) == 0)
+			ps2PauseActionReleaseLatch = false;
+	}
+
 	if ((pressed & (PLATFORM_TEXT_ENTER | PLATFORM_TEXT_CLOSE | PLATFORM_TEXT_SHIFT)) != 0)
 	{
 		if (mc->sndManager != nullptr)
@@ -281,11 +292,11 @@ void GuiIngameMenu::drawScreen(int_t mouseX, int_t mouseY, float_t partialTick)
 			float_t f1 = ((float_t)(updateCounter % 10) + partialTick) / 10.0f;
 			f1 = MathHelper::sin(f1 * 3.1415927f * 2.0f) * 0.2f + 0.8f;
 			int_t k = (int_t)(255.0f * f1);
-			drawString(fontRenderer, "Saving level..", 8, height - 16, k << 16 | k << 8 | k);
+			drawString(fontRenderer, uiText("Saving level.."), 8, height - 16, k << 16 | k << 8 | k);
 		}
 
 		syncLegacySelection();
-		drawLegacyMenuHints(fontRenderer, width, height, true);
+		drawLegacyMenuHints(mc, width, height, true);
 		GuiScreen::drawScreen(mouseX, mouseY, partialTick);
 		return;
 	}
@@ -297,8 +308,8 @@ void GuiIngameMenu::drawScreen(int_t mouseX, int_t mouseY, float_t partialTick)
 		float_t f1 = ((float_t)(updateCounter % 10) + partialTick) / 10.0f;
 		f1 = MathHelper::sin(f1 * 3.1415927f * 2.0f) * 0.2f + 0.8f;
 		int_t k = (int_t)(255.0f * f1);
-		drawString(fontRenderer, "Saving level..", 8, height - 16, k << 16 | k << 8 | k);
+		drawString(fontRenderer, uiText("Saving level.."), 8, height - 16, k << 16 | k << 8 | k);
 	}
-	drawCenteredString(fontRenderer, "Game menu", width / 2, 40, 0xffffff);
+	drawCenteredString(fontRenderer, uiText("Game menu"), width / 2, 40, 0xffffff);
 	GuiScreen::drawScreen(mouseX, mouseY, partialTick);
 }

@@ -74,6 +74,7 @@ public:
     void shutdown();
 
     void displayGuiScreen(GuiScreen *guiscreen);
+    void scheduleGuiScreenDeletion(GuiScreen *screen);
     void purgeOwnedGuiScreens(); // free abandoned menu screens the Java GC would have collected
     void displayInGameMenu();
     void setIngameFocus();
@@ -121,6 +122,24 @@ public:
 
     NetClientHandler *getSendQueue();
 
+    bool isScreenOwnedByPlayer2() const;
+    void setScreenOwnedByPlayer2(bool val);
+    bool isSplitScreenActive() const;
+    void setSplitScreenActive(bool val);
+
+    void displayPlayerScreen(int playerIndex, GuiScreen *screen);
+    GuiScreen *getPlayerScreen(int playerIndex) const;
+    void closePlayerScreen(int playerIndex);
+    bool isPlayerScreenActive(int playerIndex) const;
+    float getPlayerCursorX(int playerIndex) const;
+    float getPlayerCursorY(int playerIndex) const;
+    void setPlayerCursor(int playerIndex, float x, float y);
+    void resetPlayerCursor(int playerIndex, float defaultX, float defaultY);
+
+    void clickMouse(int_t i, bool flag);
+    void clickMouse(int_t i);
+    void clickMiddleMouseButton();
+
     // Static fields
     // Vanilla reserves 10 MB so the out-of-memory crash handler still has heap
     // to build the crash screen. Here this storage is static BSS, therefore the
@@ -148,6 +167,8 @@ public:
     World *theWorld;
     RenderGlobal *renderGlobal;
     EntityPlayerSP *thePlayer;
+    EntityPlayerSP *thePlayerOne;
+    EntityPlayerSP *thePlayer2;
     EntityLiving *renderViewEntity;
     EffectRenderer *effectRenderer;
     Session *session;
@@ -169,6 +190,7 @@ public:
     bool skipRenderWorld;
     ModelBiped *field_9242_w;
     MovingObjectPosition *objectMouseOver;
+    MovingObjectPosition *objectMouseOver2;
     GameSettings *gameSettings;
     SoundManager *sndManager;
     MouseHelper *mouseHelper;
@@ -185,6 +207,13 @@ public:
     float gpuUsagePercent;
     bool inGameHasFocus;
     bool isRaining;
+    bool screenOwnedByPlayer2;
+    bool splitScreenActive;
+    GuiScreen *playerScreens[2];
+    float playerCursorX[2];
+    float playerCursorY[2];
+    bool playerCursorInitialized[2];
+    int ignorePauseMenuTicks;
 #if !PLATFORM_PS2
     SDL_Window *window;
 #endif
@@ -198,9 +227,6 @@ private:
     void shutdownMinecraftApplet();
     void screenshotListener();
     void displayDebugInfo(long_t l);
-    void clickMouse(int_t i, bool flag);
-    void clickMouse(int_t i);
-    void clickMiddleMouseButton();
     void startCheckHasPaidThread();
     void freeMemoryForCrash();
     void forceReload();

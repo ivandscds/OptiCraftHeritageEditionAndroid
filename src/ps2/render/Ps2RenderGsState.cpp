@@ -29,6 +29,8 @@ bool s_alphaTestOn = false;
 u8 s_alphaTestAtst = 0;
 u8 s_alphaTestAref = 0;
 bool s_texaValid = false;
+bool s_fogColorValid = false;
+u64 s_fogColorReg = 0;
 
 void ps2_gs_write_reg(u64 data, u64 address)
 {
@@ -87,6 +89,28 @@ void ps2_gs_state_apply_texa()
 
     ps2_gs_write_reg(GS_SETREG_TEXA(0x00, 1, 0x80), GS_TEXA);
     s_texaValid = true;
+}
+
+void ps2_gs_state_apply_fog_color(float red, float green, float blue)
+{
+    if (!gsGlobal)
+        return;
+
+    auto toByte = [](float value) -> u8 {
+        if (value <= 0.0f) return 0;
+        if (value >= 1.0f) return 255;
+        return (u8)(value * 255.0f + 0.5f);
+    };
+
+    const u64 fogColor = (u64)toByte(red) |
+        ((u64)toByte(green) << 8) |
+        ((u64)toByte(blue) << 16);
+    if (s_fogColorValid && s_fogColorReg == fogColor)
+        return;
+
+    ps2_gs_write_reg(fogColor, GS_FOGCOL);
+    s_fogColorValid = true;
+    s_fogColorReg = fogColor;
 }
 
 void ps2_gs_state_apply_frame_mask(u32 mask)
@@ -193,6 +217,7 @@ void ps2_gs_state_invalidate_after_clear()
     s_blendAlphaValid = false;
     s_primAlphaEnableValid = false;
     s_texaValid = false;
+    s_fogColorValid = false;
 }
 
 void ps2_gs_state_invalidate_path1()
@@ -511,6 +536,7 @@ void ps2_gs_state_clear_depth_only()
 void ps2_gs_state_begin_terrain_pass(bool translucent)
 {
     Ps2RenderContext& context = ps2_render_context();
+    context.terrainTranslucent = translucent;
     if (translucent)
     {
         s_blendSrc = kBlendSrcAlpha;
@@ -524,6 +550,10 @@ void ps2_gs_state_begin_terrain_pass(bool translucent)
             s_translucentDepthFuncOverridden = true;
         }
         s_depthFunc = kCompareLess;
+        // CT16 terrain textures (including PSMT8's CT16 palette) retain only
+        // one alpha bit. Source-alpha blending would make water/ice opaque.
+        // Restore the terrain material opacity independently of GS fog; leave
+        // texture alpha testing and the fog coefficient path unchanged.
         s_blendFixForced = true;
         s_blendFixValue = 0x58;
         ps2_gs_state_invalidate_blend_alpha();
@@ -544,6 +574,7 @@ void ps2_gs_state_end_terrain_pass(bool translucent)
         return;
 
     Ps2RenderContext& context = ps2_render_context();
+    context.terrainTranslucent = false;
     s_blendFixForced = false;
     s_blendFixValue = 0x80;
     ps2_gs_state_invalidate_blend_alpha();

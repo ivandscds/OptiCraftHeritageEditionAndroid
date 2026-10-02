@@ -76,7 +76,39 @@ const std::vector<int_t> &WorldChunkManager::biomeIdArea(int_t x, int_t z, int_t
 #if PLATFORM_FAST_BIOME_SOURCE
     return fastBiomeIdArea(x, z, width, height);
 #else
-    return biomeIndexLayer->getInts(x, z, width, height);
+    const std::vector<int_t> &ids = biomeIndexLayer->getInts(x, z, width, height);
+    if (limitedWorld)
+    {
+        const float rInner = worldSizeType == 2 ? 394.0f : 92.0f;
+        const float rOuter = worldSizeType == 2 ? 420.0f : 118.0f;
+        const float rInnerSq = rInner * rInner;
+        const float rOuterSq = rOuter * rOuter;
+        if (fastBiomeIds.size() < ids.size())
+            fastBiomeIds.resize(ids.size());
+        for (int_t j = 0; j < height; ++j)
+        {
+            for (int_t i = 0; i < width; ++i)
+            {
+                const std::size_t idx = static_cast<std::size_t>(j * width + i);
+                int_t bId = ids[idx];
+                const float dx = static_cast<float>(x + i);
+                const float dz = static_cast<float>(z + j);
+                const float distSq = dx * dx + dz * dz;
+                if (distSq < rInnerSq)
+                {
+                    if (bId == BiomeGenBase::ocean->biomeID || bId == BiomeGenBase::frozenOcean->biomeID)
+                        bId = BiomeGenBase::plains->biomeID;
+                }
+                else if (distSq >= rOuterSq)
+                {
+                    bId = BiomeGenBase::ocean->biomeID;
+                }
+                fastBiomeIds[idx] = bId;
+            }
+        }
+        return fastBiomeIds;
+    }
+    return ids;
 #endif
 }
 
@@ -87,7 +119,39 @@ const std::vector<int_t> &WorldChunkManager::coarseBiomeIdArea(int_t x, int_t z,
     // sources would let decoration disagree with the terrain it decorates.
     return fastBiomeIdArea(x, z, width, height);
 #else
-    return genBiomes->getInts(x, z, width, height);
+    const std::vector<int_t> &ids = genBiomes->getInts(x, z, width, height);
+    if (limitedWorld)
+    {
+        const float rInner = worldSizeType == 2 ? 394.0f : 92.0f;
+        const float rOuter = worldSizeType == 2 ? 420.0f : 118.0f;
+        const float rInnerSq = rInner * rInner;
+        const float rOuterSq = rOuter * rOuter;
+        if (fastCoarseBiomeIds.size() < ids.size())
+            fastCoarseBiomeIds.resize(ids.size());
+        for (int_t j = 0; j < height; ++j)
+        {
+            for (int_t i = 0; i < width; ++i)
+            {
+                const std::size_t idx = static_cast<std::size_t>(j * width + i);
+                int_t bId = ids[idx];
+                const float dx = static_cast<float>(x + i);
+                const float dz = static_cast<float>(z + j);
+                const float distSq = dx * dx + dz * dz;
+                if (distSq < rInnerSq)
+                {
+                    if (bId == BiomeGenBase::ocean->biomeID || bId == BiomeGenBase::frozenOcean->biomeID)
+                        bId = BiomeGenBase::plains->biomeID;
+                }
+                else if (distSq >= rOuterSq)
+                {
+                    bId = BiomeGenBase::ocean->biomeID;
+                }
+                fastCoarseBiomeIds[idx] = bId;
+            }
+        }
+        return fastCoarseBiomeIds;
+    }
+    return ids;
 #endif
 }
 
@@ -95,6 +159,11 @@ WorldChunkManager::WorldChunkManager(World *world)
     : WorldChunkManager(world->getRandomSeed(),
                         world->getWorldInfo() != nullptr ? world->getWorldInfo()->getTerrainType() : WorldType::DEFAULT)
 {
+    if (world != nullptr && world->isLimitedWorld())
+    {
+        worldSizeType = world->getWorldInfo() != nullptr ? world->getWorldInfo()->getWorldSizeType() : 1;
+        limitedWorld = (worldSizeType != 0);
+    }
 }
 
 WorldChunkManager::~WorldChunkManager() = default;

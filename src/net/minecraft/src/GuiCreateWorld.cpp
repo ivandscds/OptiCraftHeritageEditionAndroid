@@ -30,6 +30,9 @@ GuiCreateWorld::GuiCreateWorld(GuiScreen *parent)
     , moreWorldOptionsButton(nullptr)
     , generateStructuresButton(nullptr)
     , worldTypeButton(nullptr)
+    , worldSizeButton(nullptr)
+    , limitedWorld(false)
+    , worldSizeType(0)
     , seed("")
     , localizedNewWorldText(StatCollector::translateToLocal("selectWorld.newWorld"))
     , worldTypeIndex(0)
@@ -69,6 +72,8 @@ void GuiCreateWorld::initGui()
     controlList.push_back(worldTypeButton = new GuiButton(5, width / 2 + 5, 100, 150, 20,
         tr->translateKey("selectWorld.mapType")));
     worldTypeButton->enabled2 = false;
+    controlList.push_back(worldSizeButton = new GuiButton(7, width / 2 - 75, 125, 150, 20, ""));
+    worldSizeButton->enabled2 = false;
 
     delete textboxWorldName;
     textboxWorldName = new GuiTextField(this, fontRenderer, width / 2 - 100, 60, 200, 20, "");
@@ -111,6 +116,29 @@ void GuiCreateWorld::updateButtonText()
         type = WorldType::DEFAULT;
     worldTypeButton->displayString = tr->translateKey("selectWorld.mapType") + " " +
         tr->translateKey(type->getTranslateName());
+
+    if (worldSizeButton != nullptr)
+    {
+        const bool isEs = (tr != nullptr && tr->getCurrentLanguage().rfind("es_", 0) == 0);
+        if (worldSizeType == 1)
+        {
+            worldSizeButton->displayString = isEs
+                ? "Tamaño: Antiguo (256x256)"
+                : "World Size: Old (256x256)";
+        }
+        else if (worldSizeType == 2)
+        {
+            worldSizeButton->displayString = isEs
+                ? "Tamaño: Legacy 864x864"
+                : "World Size: Legacy 864x864";
+        }
+        else
+        {
+            worldSizeButton->displayString = isEs
+                ? "Tamaño: Infinito"
+                : "World Size: Infinite";
+        }
+    }
 }
 
 std::string GuiCreateWorld::generateUnusedFolderName(ISaveFormat *fmt, const std::string &base)
@@ -194,7 +222,7 @@ void GuiCreateWorld::actionPerformed(GuiButton *button)
             type = WorldType::worldTypes[worldTypeIndex];
         }
 
-        WorldSettings settings(worldSeed, gameType, generateStructures, hardcore, type);
+        WorldSettings settings(worldSeed, gameType, generateStructures, hardcore, type, worldSizeType);
         mc->startWorld(folderName, textboxWorldName->getText(), &settings);
         mc->displayGuiScreen(nullptr);
     }
@@ -204,8 +232,16 @@ void GuiCreateWorld::actionPerformed(GuiButton *button)
         gameModeButton->enabled2 = !moreOptions;
         generateStructuresButton->enabled2 = moreOptions;
         worldTypeButton->enabled2 = moreOptions;
+        if (worldSizeButton != nullptr)
+            worldSizeButton->enabled2 = moreOptions;
         moreWorldOptionsButton->displayString = StringTranslate::getInstance()->translateKey(
             moreOptions ? "gui.done" : "selectWorld.moreWorldOptions");
+    }
+    else if (button->id == 7)
+    {
+        worldSizeType = (worldSizeType + 1) % 3;
+        limitedWorld = (worldSizeType != 0);
+        updateButtonText();
     }
     else if (button->id == 2)
     {

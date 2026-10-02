@@ -11,15 +11,7 @@ class NetClientHandler;
 class WorldBlockPositionType;
 class WorldSettings;
 
-struct WorldClientEntityHash
-{
-	int_t operator()(Entity *entity) const;
-};
-
-struct WorldClientEntityEqual
-{
-	bool operator()(Entity *lhs, Entity *rhs) const;
-};
+#include "WorldClientEntityIdentity.h"
 
 class WorldClient : public World
 {
@@ -39,6 +31,9 @@ public:
 	void cacheCompressedChunk(int_t chunkX, int_t chunkZ, bool includeInitialize,
 	                          int_t primaryMask, int_t addMask,
 	                          std::vector<byte_t> compressed);
+#if PLATFORM_PS2 && PLATFORM_MP_DEFERRED_CHUNKS
+	void finishDeferredChunkPacketBatch();
+#endif
 	void deferBlockChange(int_t x, int_t y, int_t z, int_t blockId, int_t metadata);
 	void prioritizePlayerChunk(int_t chunkX, int_t chunkZ);
 	std::size_t getDeferredChunkCount() const { return deferredChunks.size(); }
@@ -48,18 +43,28 @@ public:
 	std::size_t getDeferredPromotionPendingCount() const;
 	ulong_t getDeferredChunkPromotions() const { return deferredChunkPromotions; }
 	ulong_t getDeferredChunkCorruptions() const { return deferredChunkCorruptions; }
+	std::size_t getPendingEntitySpawnCount() const { return entitySpawnQueue.size(); }
+	std::size_t getKnownEntityCount() const { return knownEntities.size(); }
+	ulong_t getDeferredEntityChunkPromotions() const { return deferredEntityChunkPromotions; }
 	bool entityJoinedWorld(Entity *entity) override;
 	void setEntityDead(Entity *entity) override;
 	void unloadEntities(const std::vector<Entity *> &list) override;
 	void addEntityToWorld(int_t entityId, Entity *entity);
-	Entity *getEntityByID(int_t entityId);
+	void applyNetworkPosition(Entity *entity, double x, double y, double z, float yaw, float pitch);
+	Entity *getEntityByID(int_t entityId) override;
 	Entity *removeEntityFromWorld(int_t entityId);
 	bool setBlockMetadata(int_t x, int_t y, int_t z, int_t metadata) override;
 	bool setBlockAndMetadata(int_t x, int_t y, int_t z, int_t blockId, int_t metadata) override;
 	bool setBlock(int_t x, int_t y, int_t z, int_t blockId) override;
 	bool setBlockAndMetadataAndInvalidate(int_t x, int_t y, int_t z, int_t blockId, int_t metadata);
 	void sendQuittingDisconnectingPacket() override;
+#if PLATFORM_PS2
+	// Server weather events set an instantaneous value. Update both interpolation
+	// endpoints; otherwise every render tick fades from a stale previous value.
+	void setRainStrength(float strength) { World::setRainStrength(strength); }
+#else
 	void setRainStrength(float strength) { rainingStrength = strength; }
+#endif
 
 protected:
 	IChunkProvider *getChunkProvider() override;
@@ -71,7 +76,7 @@ protected:
 
 private:
 	void trimClientChunkCache();
-	void promoteDeferredChunks();
+	void promoteDeferredChunks(const std::vector<Entity *> *priorityEntities = nullptr);
 	bool promoteDeferredChunk(int_t chunkX, int_t chunkZ);
 	void enforceDeferredChunkBudget();
 	void forgetDeferredChunk(int_t chunkX, int_t chunkZ);
@@ -103,6 +108,8 @@ private:
 	bool deferredChunkBudgetExceeded = false;
 	ulong_t deferredChunkPromotions = 0;
 	ulong_t deferredChunkCorruptions = 0;
+	ulong_t deferredEntityChunkPromotions = 0;
+	std::size_t entityRetryCursor = 0;
 	std::vector<WorldBlockPositionType *> pendingBlockChanges;
 	NetClientHandler *sendQueue;
 	ChunkProviderClient *clientChunkProvider;

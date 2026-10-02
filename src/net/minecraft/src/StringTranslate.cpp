@@ -164,33 +164,43 @@ void StringTranslate::setLanguage(const std::string &language)
     if (language == currentLanguage && !translateTable.empty())
         return;
 
-    std::map<std::string, std::string> previous = translateTable;
-    std::string previousLanguage = currentLanguage;
     translateTable.clear();
-
-    bool englishLoaded = loadLanguageFile("/lang/en_US.lang");
-
-    // ???? why if it doesn't exists
-    //loadLanguageFile("/lang/stats_US.lang");
-
-    if (!englishLoaded && !previous.empty())
-        translateTable = previous;
-
-    if (language != "en_US")
+    englishUiKeys.clear();
+    loadLanguageFile("/lang/en_US.lang");
+    for (const auto &entry : translateTable)
     {
-        if (!loadLanguageFile("/lang/" + language + ".lang"))
-        {
-            if (!previous.empty())
-            {
-                translateTable = previous;
-                currentLanguage = previousLanguage;
-                updateUnicodeFlag();
-                return;
-            }
-        }
+        const auto dot = entry.first.find('.');
+        const std::string group = entry.first.substr(0, dot);
+        if (group == "gui" || group == "menu" || group == "options" || group == "controls" ||
+            group == "selectWorld" || group == "createWorld" || group == "gameMode" ||
+            group == "multiplayer" || group == "disconnect" || group == "connect" ||
+            group == "container" || group == "key" || group == "deathScreen")
+            englishUiKeys.emplace(entry.second, entry.first);
     }
-
-    currentLanguage = language;
+    const char *aliases[][2] = {
+        {"Play Game", "menu.singleplayer"}, {"Help & Options", "menu.options"},
+        {"Start Game", "selectWorld.title"}, {"Create New World", "selectWorld.create"},
+        {"Resume Game", "menu.returnToGame"}, {"Save & Quit", "menu.returnToMenu"},
+        {"Video", "options.video"}, {"Controls", "options.controls"},
+        {"Language", "options.language"}, {"Fancy Graphics", "options.graphics"},
+        {"Smooth Lighting", "options.ao"}, {"View Bobbing", "options.viewBobbing"},
+        {"Render Clouds", "options.renderClouds"}, {"Render Distance", "options.renderDistance"},
+        {"FOV", "options.fov"}, {"Sensitivity", "options.sensitivity"},
+        {"Invert Mouse", "options.invertMouse"}, {"Attack", "key.attack"},
+        {"Use", "key.use"}, {"Jump", "key.jump"}, {"Sneak", "key.sneak"},
+        {"Drop", "key.drop"}, {"Inventory", "key.inventory"},
+        {"ON", "options.on"}, {"OFF", "options.off"}
+    };
+    for (const auto &alias : aliases)
+        if (translateTable.find(alias[1]) != translateTable.end())
+            englishUiKeys[alias[0]] = alias[1];
+    englishUiKeys["Crafting"] = "key.crafting";
+    currentLanguage = "en_US";
+    if (language != "en_US" && loadLanguageFile("/lang/" + language + ".lang"))
+        currentLanguage = language;
+    // Supplemental files use English labels as keys and do not alter the
+    // existing resource files. Missing files/entries keep the English text.
+    loadLanguageFile("/lang/ui/" + currentLanguage + ".lang", true);
     updateUnicodeFlag();
 }
 
@@ -209,10 +219,42 @@ bool StringTranslate::isBidirectional(const std::string &language)
     return language == "ar_SA" || language == "he_IL";
 }
 
+std::string StringTranslate::translateUi(const std::string &english)
+{
+    auto extra = translateTable.find("ui." + english);
+    if (extra != translateTable.end() && !extra->second.empty())
+        return extra->second;
+    auto key = englishUiKeys.find(english);
+    if (key != englishUiKeys.end())
+        return translateKey(key->second);
+    // Source labels may have an ellipsis or a colon that the vanilla key lacks.
+    const std::string suffix = english.size() >= 3 && english.compare(english.size() - 3, 3, "...") == 0
+        ? "..." : (english.size() >= 2 && english.compare(english.size() - 2, 2, ": ") == 0 ? ": " : "");
+    if (!suffix.empty())
+        return translateUi(english.substr(0, english.size() - suffix.size())) + suffix;
+    if (currentLanguage.rfind("es_", 0) == 0)
+    {
+        if (english == "Split Screen") return "Pantalla dividida";
+        if (english == "Horizontal") return "Horizontal";
+        if (english == "Vertical") return "Vertical";
+        if (english == "Toggle") return "Alternar";
+        if (english == "Delete") return "Eliminar";
+    }
+    return english;
+}
+
 std::string StringTranslate::translateKey(const std::string &s)
 {
     auto it = translateTable.find(s);
-    return it != translateTable.end() ? it->second : s;
+    if (it != translateTable.end())
+        return it->second;
+    if (s == "key.crafting")
+    {
+        if (currentLanguage.rfind("es_", 0) == 0)
+            return "Fabricar";
+        return "Crafting";
+    }
+    return s;
 }
 
 std::string StringTranslate::translateKeyFormat(const std::string &s, const std::vector<std::string> &args)
@@ -259,7 +301,7 @@ std::string StringTranslate::translateNamedKey(const std::string &s)
     return it != translateTable.end() ? it->second : "";
 }
 
-bool StringTranslate::loadLanguageFile(const std::string &path)
+bool StringTranslate::loadLanguageFile(const std::string &path, bool ui)
 {
     std::unique_ptr<std::istream> owned = openLanguageResource(path);
     std::istream *input = owned.get();
@@ -282,7 +324,11 @@ bool StringTranslate::loadLanguageFile(const std::string &path)
         std::size_t equals = line.find('=');
         if (equals == std::string::npos)
             continue;
-        translateTable[trim(line.substr(0, equals))] = trim(line.substr(equals + 1));
+        const std::string key = trim(line.substr(0, equals));
+        const std::string value = trim(line.substr(equals + 1));
+        // Empty overrides must not erase the English fallback.
+        if (!key.empty() && !value.empty())
+            translateTable[(ui ? "ui." : "") + key] = value;
     }
     return true;
 }

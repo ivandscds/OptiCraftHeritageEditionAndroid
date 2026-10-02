@@ -28,9 +28,6 @@ void GuiSlotServer::elementClicked(int_t index, bool doubleClicked)
         return;
     parentGui->setSelectedServer(index);
     const bool valid = index >= 0 && index < getSize();
-    if (parentGui->getButtonSelect() != nullptr) parentGui->getButtonSelect()->enabled = valid;
-    if (parentGui->getButtonEdit() != nullptr) parentGui->getButtonEdit()->enabled = valid;
-    if (parentGui->getButtonDelete() != nullptr) parentGui->getButtonDelete()->enabled = valid;
     if (doubleClicked && valid)
         parentGui->joinServer(index);
 }
@@ -75,10 +72,22 @@ void GuiSlotServer::drawSlot(int_t index, int_t x, int_t y, int_t, Tessellator *
         playerCount = server->playerCount;
         lag = server->lag;
         polled = server->polled;
-        if (!server->polled && GuiMultiplayer::getThreadsPending() < 5)
+#ifdef PS2_PLATFORM
+        constexpr int_t maxPollThreads = 1;
+        const long_t now = System::currentTimeMillis();
+        const bool retryDue = server->polled && server->lag == -1 &&
+                              server->nextPollTime > 0 && now >= server->nextPollTime;
+#else
+        constexpr int_t maxPollThreads = 5;
+        constexpr bool retryDue = false;
+#endif
+        if ((!server->polled || retryDue) && GuiMultiplayer::getThreadsPending() < maxPollThreads)
         {
             server->polled = true;
             server->lag = -2;
+#ifdef PS2_PLATFORM
+            server->nextPollTime = 0;
+#endif
             server->motd.clear();
             server->playerCount.clear();
             polled = true;

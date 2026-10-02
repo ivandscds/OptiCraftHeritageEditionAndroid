@@ -182,7 +182,10 @@ void poll(WiiPadInternal::FrameState& state)
 	state.setMouse(VM_ATTACK,    lwjgl::Mouse::isGrabbed()
 		? (!thirdPersonChordHeld && (held & wmButtons.attack) != 0)
 		: (held & WPAD_BUTTON_A) != 0);
-	state.setMouse(VM_USE,       !thirdPersonChordHeld && (held & wmButtons.use) != 0);
+	// En GUI, el clic secundario (soltar 1 ítem / dividir stack) es siempre el gatillo B físico
+	state.setMouse(VM_USE,       lwjgl::Mouse::isGrabbed()
+		? (!thirdPersonChordHeld && (held & wmButtons.use) != 0)
+		: (held & WPAD_BUTTON_B) != 0);
 
 	if (held & WPAD_BUTTON_A)      state.textInputHeld |= WII_TEXT_TYPE;
 	if (held & WPAD_BUTTON_B)      state.textInputHeld |= WII_TEXT_BACK;
@@ -194,6 +197,8 @@ void poll(WiiPadInternal::FrameState& state)
 	if (held & WPAD_BUTTON_DOWN)   state.textInputHeld |= WII_TEXT_DOWN;
 	if (held & WPAD_BUTTON_LEFT)   state.textInputHeld |= WII_TEXT_LEFT;
 	if (held & WPAD_BUTTON_RIGHT)  state.textInputHeld |= WII_TEXT_RIGHT;
+	if (held & (WPAD_BUTTON_MINUS | WPAD_BUTTON_1)) state.textInputHeld |= WII_TEXT_PREV_PAGE;
+	if (held & (WPAD_BUTTON_PLUS  | WPAD_BUTTON_2)) state.textInputHeld |= WII_TEXT_NEXT_PAGE;
 
 	// Diagnostics is the 1+2 chord, so that 2 is free to cycle the hotbar and 1
 	// is free to be the default Drop. Both singles stand down while the chord is
@@ -231,9 +236,10 @@ void poll(WiiPadInternal::FrameState& state)
 	{
 		g_classicMenuStickWasActive = false;
 		const u32 padButtons = WPAD_BUTTON_UP | WPAD_BUTTON_DOWN | WPAD_BUTTON_LEFT |
-			WPAD_BUTTON_RIGHT | WPAD_BUTTON_PLUS | WPAD_BUTTON_MINUS | WPAD_BUTTON_B |
+			WPAD_BUTTON_RIGHT | WPAD_BUTTON_PLUS | WPAD_BUTTON_MINUS |
 			WPAD_BUTTON_1 | WPAD_BUTTON_2;
-		if ((down & padButtons) != 0 || ((down & WPAD_BUTTON_A) != 0 && !irValid))
+		// A y B son los dos gatillos del puntero; solo cuentan como pad si el sensor IR no es visible
+		if ((down & padButtons) != 0 || (((down & (WPAD_BUTTON_A | WPAD_BUTTON_B)) != 0) && !irValid))
 			state.menuPadActivity = true;
 	}
 
@@ -325,6 +331,12 @@ void poll(WiiPadInternal::FrameState& state)
 		if (held & WPAD_CLASSIC_BUTTON_DOWN)   state.textInputHeld |= WII_TEXT_DOWN;
 		if (held & WPAD_CLASSIC_BUTTON_LEFT)   state.textInputHeld |= WII_TEXT_LEFT;
 		if (held & WPAD_CLASSIC_BUTTON_RIGHT)  state.textInputHeld |= WII_TEXT_RIGHT;
+		if (held & (WPAD_CLASSIC_BUTTON_FULL_L | WPAD_CLASSIC_BUTTON_ZL))
+			state.textInputHeld |= WII_TEXT_PREV_PAGE;
+		if (held & (WPAD_CLASSIC_BUTTON_FULL_R | WPAD_CLASSIC_BUTTON_ZR))
+			state.textInputHeld |= WII_TEXT_NEXT_PAGE;
+		if (held & (WPAD_CLASSIC_BUTTON_X | WPAD_CLASSIC_BUTTON_Y))
+			state.textInputHeld |= WII_TEXT_SHIFT;
 
 		// ZL/ZR are the hotbar, for the same reason the GameCube pad puts it on
 		// the D-pad: without it there is no way to change the selected item.
@@ -401,8 +413,9 @@ void poll(WiiPadInternal::FrameState& state)
 		debug.irMag = WiiPointer::handleIr(ix, iy, !state.inMenu && !state.alternativeControls);
 		if (expType != WPAD_EXP_CLASSIC)
 		{
+			// Tanto el clic primario (A) como el secundario (B) pertenecen al puntero
 			state.menuPointerActivity = WiiPointer::menuPointerActivity() ||
-				(state.inMenu && (down & WPAD_BUTTON_A) != 0);
+				(state.inMenu && (down & (WPAD_BUTTON_A | WPAD_BUTTON_B)) != 0);
 		}
 	}
 	else

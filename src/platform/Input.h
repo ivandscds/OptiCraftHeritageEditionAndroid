@@ -12,8 +12,10 @@ enum PlatformTextAction : std::uint32_t
     PLATFORM_TEXT_BACK   = 1u << 5,
     PLATFORM_TEXT_SPACE  = 1u << 6,
     PLATFORM_TEXT_SHIFT  = 1u << 7,
-    PLATFORM_TEXT_ENTER  = 1u << 8,
-    PLATFORM_TEXT_CLOSE  = 1u << 9,
+    PLATFORM_TEXT_ENTER      = 1u << 8,
+    PLATFORM_TEXT_CLOSE      = 1u << 9,
+    PLATFORM_TEXT_PREV_PAGE  = 1u << 10,
+    PLATFORM_TEXT_NEXT_PAGE  = 1u << 11,
 };
 
 struct PlatformTextInputSnapshot

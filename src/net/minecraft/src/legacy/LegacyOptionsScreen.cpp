@@ -19,7 +19,8 @@
 LegacyOptionsScreen::LegacyOptionsScreen(GuiScreen *parent, GameSettings *settingsValue,
     LegacyOptionsBackgroundMode backgroundModeValue)
     : parentScreen(parent), settings(settingsValue), backgroundMode(backgroundModeValue),
-      selectedControlIndex(-1), hoveredControlIndex(-1), panoramaAvailable(false), panelVisible(false)
+      selectedControlIndex(-1), hoveredControlIndex(-1), panoramaAvailable(false), panelVisible(false),
+      ps2ActionReleaseLatch(true)
 {
 }
 
@@ -134,26 +135,37 @@ void LegacyOptionsScreen::updateScreen()
     GuiScreen::updateScreen();
     syncLegacySelection();
 #if PLATFORM_PS2 || PLATFORM_WII
+    // A focused GuiTextField gives the virtual keyboard exclusive ownership of
+    // these buttons. Do not move or activate the menu underneath the overlay.
+    if (platformTextInputExclusive())
+        return;
+
     const PlatformTextInputSnapshot pad = platformTextInputSnapshot(platformMenuPad());
 #if PLATFORM_PS2
-    if ((pad.pressed & (PLATFORM_TEXT_CLOSE | PLATFORM_TEXT_SHIFT)) != 0)
+    std::uint32_t pressed = pad.pressed;
+    if (ps2ActionReleaseLatch)
+    {
+        pressed &= ~PLATFORM_TEXT_TYPE;
+        if ((pad.held & PLATFORM_TEXT_TYPE) == 0)
+            ps2ActionReleaseLatch = false;
+    }
+
+    if ((pressed & (PLATFORM_TEXT_CLOSE | PLATFORM_TEXT_SHIFT)) != 0)
     {
         if (mc != nullptr && mc->sndManager != nullptr)
             mc->sndManager->playSoundFX("random.back", 1.0f, 1.0f);
         returnToParent();
         return;
     }
-#endif
-    if ((pad.pressed & PLATFORM_TEXT_UP) != 0)
+    if ((pressed & PLATFORM_TEXT_UP) != 0)
         moveLegacySelection(-1);
-    else if ((pad.pressed & PLATFORM_TEXT_DOWN) != 0)
+    else if ((pressed & PLATFORM_TEXT_DOWN) != 0)
         moveLegacySelection(1);
-#if PLATFORM_PS2
-    if ((pad.pressed & PLATFORM_TEXT_LEFT) != 0)
+    if ((pressed & PLATFORM_TEXT_LEFT) != 0)
         adjustLegacySelection(-1);
-    else if ((pad.pressed & PLATFORM_TEXT_RIGHT) != 0)
+    else if ((pressed & PLATFORM_TEXT_RIGHT) != 0)
         adjustLegacySelection(1);
-    if ((pad.pressed & PLATFORM_TEXT_TYPE) != 0)
+    if ((pressed & PLATFORM_TEXT_TYPE) != 0)
         activateLegacySelection();
 #elif PLATFORM_WII
     if (!platformMenuPointerActive())
@@ -215,5 +227,5 @@ void LegacyOptionsScreen::drawLegacyBackground(float_t partialTick)
         panelRenderer.draw(legacyLayout);
 
     syncLegacySelection();
-    drawLegacyMenuHints(fontRenderer, width, height, true);
+    drawLegacyMenuHints(mc, width, height, true);
 }
