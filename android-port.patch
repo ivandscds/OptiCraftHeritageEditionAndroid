@@ -1,6 +1,6 @@
 diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
---- orig/CMakeLists.txt	2026-09-18 18:14:00.373740144 +0000
-+++ new/CMakeLists.txt	2026-09-19 22:58:56.228264255 +0000
+--- orig/CMakeLists.txt	2026-10-07 01:03:25.926891755 +0000
++++ new/CMakeLists.txt	2026-10-07 01:03:29.819473661 +0000
 @@ -47,6 +47,17 @@
      return()
  endif()
@@ -19,7 +19,7 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  enable_testing()
  
  function(opticraft_add_optional_test target test_source)
-@@ -164,7 +175,7 @@
+@@ -168,7 +179,7 @@
  # Build the desktop target from common code plus the PC tree. Foreign console
  # sources are never discovered, so adding a new Wii/PS2 .cpp cannot silently
  # enter a desktop link.
@@ -28,17 +28,20 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  set(OPTICRAFT_MINIZIP_SOURCES
      "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib/contrib/minizip/ioapi.c"
      "${CMAKE_CURRENT_SOURCE_DIR}/external/zlib/contrib/minizip/unzip.c"
-@@ -175,15 +186,15 @@
+@@ -179,18 +190,18 @@
  )
  
  if(WIN32)
 -    opticraft_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]linux[/\\]")
 +    mcbeta_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]linux[/\\]")
  elseif(UNIX)
+     # macOS lands here too (APPLE implies UNIX): src/pc/linux is the shared
+     # POSIX implementation (File/Resource/Runtime carry their own __APPLE__
+     # paths), only the win32 variants are foreign.
 -    opticraft_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]win32[/\\]")
 +    mcbeta_exclude_sources(OPTICRAFT_COMMON_SOURCES "[/\\]pc[/\\]win32[/\\]")
  else()
-     message(FATAL_ERROR "OptiCraft currently supports Windows and Linux only")
+     message(FATAL_ERROR "OptiCraft currently supports Windows, Linux and macOS only")
  endif()
  
  # Each public platform facade has exactly one implementation in this target.
@@ -48,9 +51,9 @@ diff -ruN orig/CMakeLists.txt new/CMakeLists.txt
  # Unified diagnostic verbosity, the same knob cmake/ps2.cmake and cmake/wii.cmake
  # expose. The desktop target left it undefined, so platform/Log.h fell back to 0
 diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
---- orig/src/client/Minecraft.cpp	2026-09-21 06:33:08.413503767 +0000
-+++ new/src/client/Minecraft.cpp	2026-09-22 23:16:19.145330560 +0000
-@@ -1241,6 +1241,9 @@
+--- orig/src/client/Minecraft.cpp	2026-10-07 01:03:27.529730873 +0000
++++ new/src/client/Minecraft.cpp	2026-10-07 01:03:29.882675774 +0000
+@@ -1279,6 +1279,9 @@
          return;
      if (currentScreen != nullptr)
          currentScreen->onGuiClosed();
@@ -60,7 +63,7 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
  #if PLATFORM_SYNC_STATS_ON_GUI_CHANGE
      if (dynamic_cast<GuiMainMenu *>(guiscreen) != nullptr)
          statFileWriter->prepareStatsForSync();
-@@ -1508,6 +1511,9 @@
+@@ -1702,6 +1705,9 @@
  
  void Minecraft::runTick()
  {
@@ -70,7 +73,7 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
      if (rightClickDelayTimer > 0)
          --rightClickDelayTimer;
  
-@@ -2192,6 +2198,9 @@
+@@ -2570,6 +2576,9 @@
              platformMemoryCheckpoint("changeWorld pre-preload");
              preloadWorld(s);
              platformMemoryCheckpoint("changeWorld post-preload");
@@ -80,9 +83,9 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
          }
  
          if (thePlayer == nullptr)
-@@ -2414,6 +2423,9 @@
-     thePlayer->handleItemUseFinish();
-     playerController->initializePlayer(thePlayer);
+@@ -2837,6 +2846,9 @@
+     if (isPlayerScreenActive(0))
+         closePlayerScreen(0);
      preloadWorld("Respawning");
 +#if defined(__ANDROID__)
 +    androidSetCheckpoint("respawn: preloadWorld returned");
@@ -90,7 +93,7 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
  
      if (dynamic_cast<GuiGameOver *>(currentScreen) != nullptr)
          displayGuiScreen(nullptr);
-@@ -2500,6 +2512,9 @@
+@@ -2923,6 +2935,9 @@
          for (int_t l = -c; l <= c; l += 16)
          {
              loadingScreen->setLoadingProgress((i++ * 100) / j);
@@ -100,7 +103,7 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
              preloadColumn(chunkcoordinates.x + k, chunkcoordinates.z + l);
          }
      }
-@@ -2520,6 +2535,9 @@
+@@ -2943,6 +2958,9 @@
              for (int_t chunkZ = -residentRadius; chunkZ <= residentRadius; ++chunkZ)
              {
                  loadingScreen->setLoadingProgress((residentDone++ * 100) / residentTotal);
@@ -110,7 +113,7 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
                  preloadColumn(chunkX * 16 + 8, chunkZ * 16 + 8);
              }
          }
-@@ -2530,6 +2548,9 @@
+@@ -2953,6 +2971,9 @@
      theWorld->findingSpawnPoint = previousFindingSpawnPoint;
  #endif
  
@@ -120,47 +123,9 @@ diff -ruN orig/src/client/Minecraft.cpp new/src/client/Minecraft.cpp
      loadingScreen->displayLoadingString("Simulating world for a bit");
  #if PLATFORM_UNLOAD_AFTER_PRELOAD
      theWorld->unloadAllChunks();
-diff -ruN orig/src/java/JavaNetwork.cpp new/src/java/JavaNetwork.cpp
---- orig/src/java/JavaNetwork.cpp	2026-09-22 05:24:15.100048169 +0000
-+++ new/src/java/JavaNetwork.cpp	2026-09-22 05:24:15.111970346 +0000
-@@ -97,7 +97,14 @@
- 		while (!closing.load(std::memory_order_acquire) &&
- 		       !readInterrupted.load(std::memory_order_acquire))
- 		{
--			std::lock_guard<std::mutex> guard(socketIoLock);
-+			// Reading and writing a TCP socket work on independent buffers (kernel send/recv
-+			// queues) and can safely run concurrently. A single shared lock here made the write
-+			// thread wait out this loop's 100ms poll almost every cycle, delaying the handshake
-+			// packet by seconds and sometimes past the server's login timeout, or past the point
-+			// where the server had already closed the connection. Two locks (one for reads, one
-+			// for writes) only serialize each side against itself, which is all that is needed
-+			// since there's one reader thread and one writer thread.
-+			std::lock_guard<std::mutex> guard(readLock);
- 			if (closing.load(std::memory_order_acquire) ||
- 			    readInterrupted.load(std::memory_order_acquire))
- 				return -1;
-@@ -120,7 +127,7 @@
- 		if (length <= 0)
- 			return true;
- 
--		std::lock_guard<std::mutex> guard(socketIoLock);
-+		std::lock_guard<std::mutex> guard(writeLock);
- 		int offset = 0;
- 		while (offset < length)
- 		{
-@@ -178,7 +185,8 @@
- 	TCPsocket socket = nullptr;
- 	SDLNet_SocketSet socketSet = nullptr;
- 	bool socketInSet = false;
--	std::mutex socketIoLock;
-+	std::mutex readLock;
-+	std::mutex writeLock;
- 	std::atomic_bool closing{false};
- 	std::atomic_bool readInterrupted{false};
- 	std::string remoteSocketAddress;
 diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
---- orig/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.901063291 +0000
-+++ new/src/java/fdlibm/fdlibm.h	2026-09-19 22:58:55.933083356 +0000
+--- orig/src/java/fdlibm/fdlibm.h	2026-10-07 01:03:27.532135371 +0000
++++ new/src/java/fdlibm/fdlibm.h	2026-10-07 01:03:29.941040760 +0000
 @@ -24,6 +24,13 @@
  #endif
  #endif
@@ -176,8 +141,8 @@ diff -ruN orig/src/java/fdlibm/fdlibm.h new/src/java/fdlibm/fdlibm.h
  #define __HI(x) *(1+(int*)&x)
  #define __LO(x) *(int*)&x
 diff -ruN orig/src/net/minecraft/src/ChunkProviderEnd.cpp new/src/net/minecraft/src/ChunkProviderEnd.cpp
---- orig/src/net/minecraft/src/ChunkProviderEnd.cpp	2026-09-22 07:01:07.819033209 +0000
-+++ new/src/net/minecraft/src/ChunkProviderEnd.cpp	2026-09-22 07:01:07.837650556 +0000
+--- orig/src/net/minecraft/src/ChunkProviderEnd.cpp	2026-10-07 01:03:27.611192336 +0000
++++ new/src/net/minecraft/src/ChunkProviderEnd.cpp	2026-10-07 01:03:29.946260605 +0000
 @@ -1,4 +1,7 @@
  #include "ChunkProviderEnd.h"
 +#if defined(__ANDROID__)
@@ -197,8 +162,8 @@ diff -ruN orig/src/net/minecraft/src/ChunkProviderEnd.cpp new/src/net/minecraft/
  	const long_t seedZ = JavaArithmetic::longMul((long_t)z, 132897987541LL);
  	endRNG.setSeed(JavaArithmetic::longAdd(seedX, seedZ));
 diff -ruN orig/src/net/minecraft/src/EntityDragon.cpp new/src/net/minecraft/src/EntityDragon.cpp
---- orig/src/net/minecraft/src/EntityDragon.cpp	2026-09-22 07:01:07.823795693 +0000
-+++ new/src/net/minecraft/src/EntityDragon.cpp	2026-09-22 07:01:07.837901902 +0000
+--- orig/src/net/minecraft/src/EntityDragon.cpp	2026-10-07 01:03:27.629086305 +0000
++++ new/src/net/minecraft/src/EntityDragon.cpp	2026-10-07 01:03:29.965828712 +0000
 @@ -1,4 +1,7 @@
  #include "EntityDragon.h"
 +#if defined(__ANDROID__)
@@ -218,8 +183,8 @@ diff -ruN orig/src/net/minecraft/src/EntityDragon.cpp new/src/net/minecraft/src/
      // Reported as its own tick phase so the End fight shows up in the frame
      // log separately from the entTick total it is part of.
 diff -ruN orig/src/net/minecraft/src/GuiTextField.cpp new/src/net/minecraft/src/GuiTextField.cpp
---- orig/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:08.406600495 +0000
-+++ new/src/net/minecraft/src/GuiTextField.cpp	2026-09-21 06:33:45.764140303 +0000
+--- orig/src/net/minecraft/src/GuiTextField.cpp	2026-10-07 01:03:27.683233589 +0000
++++ new/src/net/minecraft/src/GuiTextField.cpp	2026-10-07 01:03:29.983579827 +0000
 @@ -387,6 +387,10 @@
  {
      if (focused && !isFocused)
@@ -232,9 +197,9 @@ diff -ruN orig/src/net/minecraft/src/GuiTextField.cpp new/src/net/minecraft/src/
      if (parentGuiScreen != nullptr)
          parentGuiScreen->notifyTextFieldFocus(this, focused);
 diff -ruN orig/src/net/minecraft/src/NetClientHandler.cpp new/src/net/minecraft/src/NetClientHandler.cpp
---- orig/src/net/minecraft/src/NetClientHandler.cpp	2026-09-22 05:58:20.081386852 +0000
-+++ new/src/net/minecraft/src/NetClientHandler.cpp	2026-09-22 23:16:19.144161785 +0000
-@@ -646,6 +646,11 @@
+--- orig/src/net/minecraft/src/NetClientHandler.cpp	2026-10-07 01:03:27.713764972 +0000
++++ new/src/net/minecraft/src/NetClientHandler.cpp	2026-10-07 01:03:30.039752372 +0000
+@@ -661,6 +661,11 @@
  void NetClientHandler::handleMapChunk(Packet51MapChunk* packet)
  {
      mapChunkCount++;
@@ -243,10 +208,10 @@ diff -ruN orig/src/net/minecraft/src/NetClientHandler.cpp new/src/net/minecraft/
 +    if (mapChunkCount % 32 == 0)
 +        androidLogMemory("handleMapChunk");
 +#endif
- #ifdef WII_PLATFORM
+ #if PLATFORM_MP_DEFERRED_CHUNKS
      // Keep the initialize packet plus subsequent section deltas compressed for
-     // bounded client caches. This lets an evicted 1.2.5 column be reconstructed
-@@ -1095,10 +1100,19 @@
+     // bounded console caches. This lets an evicted 1.2.5 column be reconstructed
+@@ -1155,10 +1160,19 @@
      {
          terrainDownloaded = false;
  
@@ -267,8 +232,8 @@ diff -ruN orig/src/net/minecraft/src/NetClientHandler.cpp new/src/net/minecraft/
          mc->displayGuiScreen(new GuiDownloadTerrain(this));
      }
 diff -ruN orig/src/net/minecraft/src/Tessellator.cpp new/src/net/minecraft/src/Tessellator.cpp
---- orig/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.269500767 +0000
-+++ new/src/net/minecraft/src/Tessellator.cpp	2026-09-21 06:29:03.300961973 +0000
+--- orig/src/net/minecraft/src/Tessellator.cpp	2026-10-07 01:03:27.810377329 +0000
++++ new/src/net/minecraft/src/Tessellator.cpp	2026-10-07 01:03:30.097206313 +0000
 @@ -687,6 +687,12 @@
  			{
  				rawBuffer[rawBufferIndex + 5] = rawBuffer[(rawBufferIndex - j) + 5];
@@ -282,21 +247,9 @@ diff -ruN orig/src/net/minecraft/src/Tessellator.cpp new/src/net/minecraft/src/T
  			if (hasBrightness)
  			{
  				rawBuffer[rawBufferIndex + 7] = rawBuffer[(rawBufferIndex - j) + 7];
-diff -ruN orig/src/net/minecraft/src/TexturePackList.cpp new/src/net/minecraft/src/TexturePackList.cpp
---- orig/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.615847143 +0000
-+++ new/src/net/minecraft/src/TexturePackList.cpp	2026-09-18 19:00:01.853650787 +0000
-@@ -82,7 +82,7 @@
- 			if (lowerName.size() < 4 || lowerName.compare(lowerName.size() - 4, 4, ".zip") != 0) continue;
- 
- 			auto file = entry.path();
--			std::string s = filename + ":" + std::to_string(fs::file_size(file)) + ":" + std::to_string(fs::last_write_time(file).time_since_epoch().count());
-+			std::string s = filename + ":" + std::to_string(fs::file_size(file)) + ":" + std::to_string(static_cast<long long>(fs::last_write_time(file).time_since_epoch().count()));
- 
- 			try
- 			{
 diff -ruN orig/src/net/minecraft/src/ThreadDownloadResources.cpp new/src/net/minecraft/src/ThreadDownloadResources.cpp
---- orig/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-09-20 19:18:08.411902439 +0000
-+++ new/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-09-20 20:03:39.457949689 +0000
+--- orig/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-10-07 01:03:27.813262001 +0000
++++ new/src/net/minecraft/src/ThreadDownloadResources.cpp	2026-10-07 01:03:30.083970890 +0000
 @@ -1,4 +1,10 @@
  #include "ThreadDownloadResources.h"
 +
@@ -387,22 +340,9 @@ diff -ruN orig/src/net/minecraft/src/ThreadDownloadResources.cpp new/src/net/min
  #if PLATFORM_LOCAL_RESOURCES_ONLY
  			++s_localResourceCount;
  #endif
-diff -ruN orig/src/net/minecraft/src/World.cpp new/src/net/minecraft/src/World.cpp
---- orig/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.620793427 +0000
-+++ new/src/net/minecraft/src/World.cpp	2026-09-18 19:00:01.854790285 +0000
-@@ -106,8 +106,8 @@
- #include "platform/ExtendedProfiler.h"
- #if PLATFORM_FAST_BLOCK_COLLISIONS || PLATFORM_EARLY_COLLISION_EXIT || PLATFORM_FLOAT_COLLISION_SWEEP
- #include "platform/world/PlatformBlockCollisionSweeper.h"
--#include "platform/world/StreamingFrameBudget.h"
- #endif
-+#include "platform/world/StreamingFrameBudget.h"
- 
- #if PLATFORM_BOUNDED_WORLD
- static int_t platformFindTopSpawnBlockY(World *world, int_t x, int_t z)
 diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/WorldRenderer.h
---- orig/src/net/minecraft/src/WorldRenderer.h	2026-09-18 19:00:01.625850278 +0000
-+++ new/src/net/minecraft/src/WorldRenderer.h	2026-09-18 19:00:01.855077705 +0000
+--- orig/src/net/minecraft/src/WorldRenderer.h	2026-10-07 01:03:27.826369414 +0000
++++ new/src/net/minecraft/src/WorldRenderer.h	2026-10-07 01:03:30.086002506 +0000
 @@ -55,13 +55,6 @@
  #if defined(WII_PLATFORM) || defined(PS2_PLATFORM)
  	void renderExtraTerrainMeshes(int_t pass);
@@ -432,8 +372,8 @@ diff -ruN orig/src/net/minecraft/src/WorldRenderer.h new/src/net/minecraft/src/W
  	// Monotonic microseconds at the edit that set urgentRebuild; the urgent lane
  	// logs the edit-to-publish latency against it.
 diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
---- orig/src/pc/Main.cpp	2026-09-18 18:14:00.378228758 +0000
-+++ new/src/pc/Main.cpp	2026-09-25 19:51:01.299256285 +0000
+--- orig/src/pc/Main.cpp	2026-10-07 01:03:27.910435450 +0000
++++ new/src/pc/Main.cpp	2026-10-07 01:03:30.111706497 +0000
 @@ -1,4 +1,6 @@
 +#ifndef __ANDROID__
  #define SDL_MAIN_HANDLED
@@ -825,8 +765,8 @@ diff -ruN orig/src/pc/Main.cpp new/src/pc/Main.cpp
 +#endif
 +}
 diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
---- orig/src/pc/linux/java/File.cpp	2026-09-18 18:14:00.395865867 +0000
-+++ new/src/pc/linux/java/File.cpp	2026-09-18 19:00:01.853534784 +0000
+--- orig/src/pc/linux/java/File.cpp	2026-10-07 01:03:27.911708895 +0000
++++ new/src/pc/linux/java/File.cpp	2026-10-07 01:03:30.106559250 +0000
 @@ -23,6 +23,9 @@
  #endif
  
@@ -837,16 +777,7 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  
  static std::string ToPath(const jstring &path)
  {
-@@ -114,7 +117,7 @@
-      * that struct stat has a struct timespec st_mtim member. We need this
-      * check because there are some platforms that claim to be POSIX 2008
-      * compliant but which do not have st_mtim... */
--	#if (PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime)
-+	#if defined(__ANDROID__) || ((PLATFORM_POSIX_VERSION >= 200809L) && defined(st_mtime))
-         return buffer.st_mtim.tv_sec * 1000LL + buffer.st_mtim.tv_nsec / 1000000LL;
- 	#else
- 		return buffer.st_mtime * 1000LL + buffer.st_mtimespec.tv_nsec / 1000000LL;
-@@ -235,6 +238,10 @@
+@@ -240,6 +243,10 @@
  File *File::openWorkingDirectory(const jstring &name)
  {
  	// Get the home directory environment variable
@@ -858,8 +789,8 @@ diff -ruN orig/src/pc/linux/java/File.cpp new/src/pc/linux/java/File.cpp
  	if (path == nullptr)
  		return new File_Impl("");
 diff -ruN orig/src/pc/lwjgl/Display.cpp new/src/pc/lwjgl/Display.cpp
---- orig/src/pc/lwjgl/Display.cpp	2026-09-19 18:54:06.499800985 +0000
-+++ new/src/pc/lwjgl/Display.cpp	2026-09-21 07:14:24.969720464 +0000
+--- orig/src/pc/lwjgl/Display.cpp	2026-10-07 01:03:27.911935399 +0000
++++ new/src/pc/lwjgl/Display.cpp	2026-10-07 01:03:30.107856847 +0000
 @@ -6,6 +6,9 @@
  #include "lwjgl/GLContext.h"
  #include "lwjgl/Mouse.h"
@@ -923,8 +854,8 @@ diff -ruN orig/src/pc/lwjgl/Display.cpp new/src/pc/lwjgl/Display.cpp
  }
  
 diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
---- orig/src/pc/lwjgl/GLContext.cpp	2026-09-18 18:14:00.382565324 +0000
-+++ new/src/pc/lwjgl/GLContext.cpp	2026-09-19 18:29:58.214814484 +0000
+--- orig/src/pc/lwjgl/GLContext.cpp	2026-10-07 01:03:27.912094359 +0000
++++ new/src/pc/lwjgl/GLContext.cpp	2026-10-07 01:03:30.106751890 +0000
 @@ -13,6 +13,11 @@
  #endif
  
@@ -992,10 +923,10 @@ diff -ruN orig/src/pc/lwjgl/GLContext.cpp new/src/pc/lwjgl/GLContext.cpp
  		SDL_GL_SetSwapInterval(0);
  
 diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
---- orig/src/pc/lwjgl/Keyboard.cpp	2026-09-20 03:54:15.218832574 +0000
-+++ new/src/pc/lwjgl/Keyboard.cpp	2026-09-21 23:25:41.896146043 +0000
+--- orig/src/pc/lwjgl/Keyboard.cpp	2026-10-07 01:03:27.912201464 +0000
++++ new/src/pc/lwjgl/Keyboard.cpp	2026-10-07 01:03:30.107001512 +0000
 @@ -1,12 +1,18 @@
- ﻿#include "lwjgl/Keyboard.h"
+ #include "lwjgl/Keyboard.h"
  
 +#include <algorithm>
  #include <queue>
@@ -1171,7 +1102,7 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  }
  
  // Keyboard functions
-@@ -401,6 +528,23 @@
+@@ -410,6 +537,23 @@
  	allow_repeat_events = repeat;
  }
  
@@ -1195,7 +1126,7 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  bool areRepeatEventsEnabled()
  {
  	return allow_repeat_events;
-@@ -427,6 +571,10 @@
+@@ -436,6 +580,10 @@
  
  bool isKeyDown(int_t key)
  {
@@ -1207,8 +1138,8 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.cpp new/src/pc/lwjgl/Keyboard.cpp
  	{
  		keyboard_state = SDL_GetKeyboardState(&keyboard_state_size);
 diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
---- orig/src/pc/lwjgl/Keyboard.h	2026-09-20 03:54:15.213390515 +0000
-+++ new/src/pc/lwjgl/Keyboard.h	2026-09-21 07:14:24.969268478 +0000
+--- orig/src/pc/lwjgl/Keyboard.h	2026-10-07 01:03:27.912269430 +0000
++++ new/src/pc/lwjgl/Keyboard.h	2026-10-07 01:03:30.108067725 +0000
 @@ -27,6 +27,13 @@
  void pushEvent(const SDL_Event &e);
  #endif
@@ -1223,9 +1154,9 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
  }
  
  // Key enum
-@@ -186,6 +193,11 @@
- // Event handling
+@@ -187,6 +194,11 @@
  bool next();
+ void clearEvents();
  void enableRepeatEvents(bool repeat);
 +
 +#if defined(__ANDROID__)
@@ -1236,8 +1167,8 @@ diff -ruN orig/src/pc/lwjgl/Keyboard.h new/src/pc/lwjgl/Keyboard.h
  
  char_t getEventCharacter();
 diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
---- orig/src/pc/lwjgl/Mouse.cpp	2026-09-20 03:54:15.207995706 +0000
-+++ new/src/pc/lwjgl/Mouse.cpp	2026-09-20 03:54:40.562983846 +0000
+--- orig/src/pc/lwjgl/Mouse.cpp	2026-10-07 01:03:27.912335911 +0000
++++ new/src/pc/lwjgl/Mouse.cpp	2026-10-07 01:03:30.108159601 +0000
 @@ -10,6 +10,11 @@
  #include "SDL_video.h"
  #include "SDL_mouse.h"
@@ -1250,19 +1181,62 @@ diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
  namespace lwjgl
  {
  namespace Mouse
-@@ -19,6 +24,11 @@
+@@ -19,6 +24,18 @@
  static int_t staging_dy = 0;
  static int_t staging_dz = 0;
  
 +#if defined(__ANDROID__)
 +// Buttons held by the on-screen controls (bit = LWJGL button index).
 +static unsigned virtual_button_mask = 0;
++// Menus: report clicks that came from the touch screen as right clicks (see Mouse.h).
++static bool touch_right_mode = false;
++// Which LWJGL button the touch that is currently down was reported as, so its release
++// matches even if the mode is switched while the finger is still on the screen.
++static int_t touch_down_button = 0;
++// The current touch started on one of the on-screen buttons: its click is not for the game.
++static bool touch_click_swallowed = false;
 +#endif
 +
  // SDL orders the first three buttons as left, middle, right (1, 2, 3),
  // while LWJGL orders them as left, right, middle (0, 1, 2).
  static int_t buttonSDLToLWJGL(Uint8 button)
-@@ -82,6 +92,31 @@
+@@ -74,14 +91,72 @@
+ 			event_queue.emplace(-1, 0, e.wheel.mouseX, Display::getHeight() - e.wheel.mouseY - 1, 0, 0, e.wheel.y);
+ 			break;
+ 		case SDL_MOUSEBUTTONDOWN:
++#if defined(__ANDROID__)
++			if (e.button.which == SDL_TOUCH_MOUSEID)
++			{
++				// SDL turns every first touch into a left click before the on-screen buttons
++				// get to see it. A tap on ESC/KB/R must not also click whatever is under it in
++				// the menu (outside the inventory window that would drop the held stack).
++				if (TouchControls::isMenuButtonAt(e.button.x, e.button.y))
++				{
++					touch_click_swallowed = true;
++					break;
++				}
++				touch_down_button = touch_right_mode ? 1 : 0;
++				event_queue.emplace(touch_down_button, 1, e.button.x, Display::getHeight() - e.button.y - 1, 0, 0, 0);
++				break;
++			}
++#endif
+ 			event_queue.emplace(buttonSDLToLWJGL(e.button.button), 1, e.button.x, Display::getHeight() - e.button.y - 1, 0, 0, 0);
+ 			break;
+ 		case SDL_MOUSEBUTTONUP:
++#if defined(__ANDROID__)
++			if (e.button.which == SDL_TOUCH_MOUSEID)
++			{
++				if (touch_click_swallowed)
++				{
++					touch_click_swallowed = false;
++					break;
++				}
++				event_queue.emplace(touch_down_button, 0, e.button.x, Display::getHeight() - e.button.y - 1, 0, 0, 0);
++				break;
++			}
++#endif
+ 			event_queue.emplace(buttonSDLToLWJGL(e.button.button), 0, e.button.x, Display::getHeight() - e.button.y - 1, 0, 0, 0);
+ 			break;
  	}
  }
  
@@ -1289,12 +1263,17 @@ diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
 +{
 +	event_queue.emplace(-1, 0, Display::getWidth() / 2, Display::getHeight() / 2, 0, 0, direction);
 +}
++
++void setTouchRightClick(bool on)
++{
++	touch_right_mode = on;
++}
 +#endif
 +
  }
  
  void setCursorPosition(int_t x, int_t y)
-@@ -181,6 +216,10 @@
+@@ -181,6 +256,10 @@
  
  bool isButtonDown(int_t button)
  {
@@ -1305,7 +1284,7 @@ diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
  	Uint8 sdlButton = buttonLWJGLToSDL(button);
  	return sdlButton != 0 && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(sdlButton)) != 0;
  }
-@@ -201,6 +240,9 @@
+@@ -201,6 +280,9 @@
  		throw SDLException();
  	SDL_SetRelativeMouseMode(grabbed ? SDL_TRUE : SDL_FALSE);
  	clearDeltas();
@@ -1316,9 +1295,9 @@ diff -ruN orig/src/pc/lwjgl/Mouse.cpp new/src/pc/lwjgl/Mouse.cpp
  	// SDL_SetWindowMouseGrab(GLContext::detail::getWindow(), grabbed ? SDL_TRUE : SDL_FALSE);
  }
 diff -ruN orig/src/pc/lwjgl/Mouse.h new/src/pc/lwjgl/Mouse.h
---- orig/src/pc/lwjgl/Mouse.h	2026-09-20 03:54:15.200623310 +0000
-+++ new/src/pc/lwjgl/Mouse.h	2026-09-20 03:54:40.562843058 +0000
-@@ -25,6 +25,14 @@
+--- orig/src/pc/lwjgl/Mouse.h	2026-10-07 01:03:27.912389022 +0000
++++ new/src/pc/lwjgl/Mouse.h	2026-10-07 01:03:30.107130195 +0000
+@@ -25,6 +25,18 @@
  void pushEvent(const SDL_Event &e);
  #endif
  
@@ -1328,6 +1307,10 @@ diff -ruN orig/src/pc/lwjgl/Mouse.h new/src/pc/lwjgl/Mouse.h
 +void pushVirtualButton(int button, bool down);
 +void pushVirtualMotion(int dx, int dy);
 +void pushVirtualWheel(int direction);
++// Menus: SDL's touch-to-mouse emulation only ever produces left clicks. While this is on,
++// the clicks it produces are reported to the game as right clicks instead (needed to place
++// one item at a time from a held stack, e.g. to fill a crafting grid).
++void setTouchRightClick(bool on);
 +#endif
 +
  }
@@ -1335,8 +1318,8 @@ diff -ruN orig/src/pc/lwjgl/Mouse.h new/src/pc/lwjgl/Mouse.h
  void setCursorPosition(int_t x, int_t y);
 diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 --- orig/src/pc/lwjgl/TouchControls.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ new/src/pc/lwjgl/TouchControls.cpp	2026-09-21 06:52:02.930988871 +0000
-@@ -0,0 +1,535 @@
++++ new/src/pc/lwjgl/TouchControls.cpp	2026-10-07 01:03:30.107233982 +0000
+@@ -0,0 +1,577 @@
 +#if defined(__ANDROID__)
 +
 +#include "lwjgl/TouchControls.h"
@@ -1373,10 +1356,11 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	ActNext,
 +	ActDebug,
 +	ActKeyboard,
++	ActRightClick,
 +	ActCount
 +};
 +
-+const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3", "KB" };
++const char *const kLabels[ActCount] = { "JUMP", "HIT", "USE", "SNEAK", "INV", "ESC", "<", ">", "F3", "KB", "R" };
 +
 +// Camera speed for dragging: pixels of finger travel -> mouse counts.
 +const float kLookScale = 0.9f;
@@ -1411,6 +1395,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	set(ActNext, W * 0.5f + 4.6f * u, H - 0.9f * u, 0.6f * u);
 +	set(ActDebug, 2.6f * u, 0.9f * u, 0.7f * u);
 +	set(ActKeyboard, 4.3f * u, 0.9f * u, 0.7f * u);
++	set(ActRightClick, 6.0f * u, 0.9f * u, 0.7f * u);
 +	L.joyX = 3.2f * u;
 +	L.joyY = H - 3.2f * u;
 +	L.joyR = 2.6f * u;
@@ -1448,6 +1433,14 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +float g_lookRemX = 0.0f;
 +float g_lookRemY = 0.0f;
 +
++// Menus/inventories: Minecraft 1.2.5's slot clicks take a whole stack on left-click and one
++// item at a time on right-click (needed to hand-fill a crafting grid, e.g. planks for a
++// crafting table). SDL's own touch-to-mouse emulation only ever produces left clicks, and it
++// fires one the moment the first finger lands, so a "second finger" gesture would always
++// arrive after the whole stack was already dropped into the first slot. Instead the R button
++// is a latching switch: while it is lit, the clicks the touch screen produces are right clicks.
++bool g_rightClickMode = false;
++
 +const int kJoyKeys[4] = { Keyboard::KEY_W, Keyboard::KEY_A, Keyboard::KEY_S, Keyboard::KEY_D };
 +
 +void setActionState(int a, bool down)
@@ -1478,6 +1471,12 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +		Keyboard::setTextInputActive(true);
 +		g_held[a] = true;
 +	}
++	else if (a == ActRightClick)
++	{
++		g_rightClickMode = !g_rightClickMode;
++		g_held[a] = g_rightClickMode; // stays lit while the mode is on
++		Mouse::detail::setTouchRightClick(g_rightClickMode);
++	}
 +	else if (a == ActPrev)
 +	{
 +		Mouse::detail::pushVirtualWheel(1);
@@ -1496,6 +1495,8 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +
 +void releaseButton(int a)
 +{
++	if (a == ActRightClick)
++		return; // latching: only another tap on it (or leaving the menu) turns it off
 +	if (a == ActSneak)
 +		return;
 +	if (a == ActPrev || a == ActNext || a == ActKeyboard)
@@ -1560,6 +1561,9 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	}
 +	releaseJoystick();
 +	g_fingers.clear();
++	g_rightClickMode = false;
++	g_held[ActRightClick] = false;
++	Mouse::detail::setTouchRightClick(false);
 +	g_lookRemX = 0.0f;
 +	g_lookRemY = 0.0f;
 +}
@@ -1585,21 +1589,23 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	{
 +		if (!playing)
 +		{
-+			// A menu is open: touches act as the mouse; only the ESC button is ours.
-+			const int menuButtons[2] = { ActPause, ActKeyboard };
++			// A menu is open: touches act as the mouse; only the ESC/KB buttons are ours.
++			const int menuButtons[3] = { ActPause, ActKeyboard, ActRightClick };
 +			for (int a : menuButtons)
 +			{
 +				if (hitButton(L, a, px, py))
 +				{
 +					g_fingers[id] = { Finger::Button, a };
 +					pressButton(a);
-+					break;
++					return;
 +				}
 +			}
 +			return;
 +		}
 +		for (int a = 0; a < ActCount; a++)
 +		{
++			if (a == ActRightClick)
++				continue; // menus only
 +			if (hitButton(L, a, px, py))
 +			{
 +				g_fingers[id] = { Finger::Button, a };
@@ -1652,6 +1658,20 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	}
 +}
 +
++bool isMenuButtonAt(int x, int y)
++{
++	if (Mouse::isGrabbed())
++		return false;
++	const Layout L = makeLayout();
++	const int menuButtons[3] = { ActPause, ActKeyboard, ActRightClick };
++	for (int a : menuButtons)
++	{
++		if (hitButton(L, a, static_cast<float>(x), static_cast<float>(y)))
++			return true;
++	}
++	return false;
++}
++
 +void onGrabChanged(bool grabbed)
 +{
 +	releaseAll();
@@ -1683,6 +1703,7 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	{ 'K', { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 } },
 +	{ 'M', { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 } },
 +	{ 'N', { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 } },
++	{ 'R', { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 } },
 +	{ 'P', { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 } },
 +	{ 'S', { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E } },
 +	{ 'T', { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 } },
@@ -1853,12 +1874,16 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +	{
 +		drawJoystick(L);
 +		for (int a = 0; a < ActCount; a++)
-+			drawButton(L, a);
++		{
++			if (a != ActRightClick) // menus only
++				drawButton(L, a);
++		}
 +	}
 +	else
 +	{
 +		drawButton(L, ActPause);
 +		drawButton(L, ActKeyboard);
++		drawButton(L, ActRightClick);
 +	}
 +
 +	glMatrixMode(GL_PROJECTION);
@@ -1874,8 +1899,8 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.cpp new/src/pc/lwjgl/TouchControls.cpp
 +#endif
 diff -ruN orig/src/pc/lwjgl/TouchControls.h new/src/pc/lwjgl/TouchControls.h
 --- orig/src/pc/lwjgl/TouchControls.h	1970-01-01 00:00:00.000000000 +0000
-+++ new/src/pc/lwjgl/TouchControls.h	2026-09-20 03:54:15.220895030 +0000
-@@ -0,0 +1,29 @@
++++ new/src/pc/lwjgl/TouchControls.h	2026-10-07 01:03:30.108568291 +0000
+@@ -0,0 +1,34 @@
 +#pragma once
 +
 +#if defined(__ANDROID__)
@@ -1901,13 +1926,18 @@ diff -ruN orig/src/pc/lwjgl/TouchControls.h new/src/pc/lwjgl/TouchControls.h
 +// Draws the overlay; called right before the buffers are swapped.
 +void draw();
 +
++// True when (x, y) - window pixels, top-left origin - is over one of the buttons that stay
++// on screen while a menu is open (ESC, KB, R). Mouse.cpp uses it to drop the left click SDL
++// synthesizes for a touch that was really meant for one of them.
++bool isMenuButtonAt(int x, int y);
++
 +}
 +}
 +
 +#endif
 diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenGlRenderBackend.cpp
---- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-18 18:14:00.387082415 +0000
-+++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-09-23 20:28:38.369697812 +0000
+--- orig/src/pc/render/PcOpenGlRenderBackend.cpp	2026-10-07 01:03:27.913762128 +0000
++++ new/src/pc/render/PcOpenGlRenderBackend.cpp	2026-10-07 01:03:30.110954008 +0000
 @@ -15,6 +15,7 @@
  #include <cstring>
  
@@ -2038,8 +2068,8 @@ diff -ruN orig/src/pc/render/PcOpenGlRenderBackend.cpp new/src/pc/render/PcOpenG
      {
          return reinterpret_cast<const unsigned char*>(mesh.data) + offset;
 diff -ruN orig/src/platform/Log.h new/src/platform/Log.h
---- orig/src/platform/Log.h	2026-09-22 05:58:51.426284033 +0000
-+++ new/src/platform/Log.h	2026-09-22 07:00:49.140277038 +0000
+--- orig/src/platform/Log.h	2026-10-07 01:03:27.916754430 +0000
++++ new/src/platform/Log.h	2026-10-07 01:03:30.111813527 +0000
 @@ -1,6 +1,20 @@
  #pragma once
  
@@ -2062,8 +2092,8 @@ diff -ruN orig/src/platform/Log.h new/src/platform/Log.h
  
  #ifndef MC_LOG_LEVEL
 diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
---- orig/src/platform/Resources_PC.cpp	2026-09-18 18:14:00.391455966 +0000
-+++ new/src/platform/Resources_PC.cpp	2026-09-19 00:44:26.198822922 +0000
+--- orig/src/platform/Resources_PC.cpp	2026-10-07 01:03:27.918349113 +0000
++++ new/src/platform/Resources_PC.cpp	2026-10-07 01:03:30.152099824 +0000
 @@ -8,6 +8,30 @@
  
  std::string PlatformResources::baseDir()
@@ -2096,8 +2126,8 @@ diff -ruN orig/src/platform/Resources_PC.cpp new/src/platform/Resources_PC.cpp
      if (base)
      {
 diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/SoundManager_PC.cpp
---- orig/src/platform/audio/SoundManager_PC.cpp	2026-09-20 04:02:17.289487939 +0000
-+++ new/src/platform/audio/SoundManager_PC.cpp	2026-09-22 04:51:54.616906747 +0000
+--- orig/src/platform/audio/SoundManager_PC.cpp	2026-10-07 01:03:27.919219305 +0000
++++ new/src/platform/audio/SoundManager_PC.cpp	2026-10-07 01:03:30.154466713 +0000
 @@ -39,6 +39,10 @@
  #include <algorithm>
  #include <cstring>
@@ -2201,7 +2231,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
  
  void SoundManager::addStreaming(const jstring &s, const std::string &file)
  {
-     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav") || audioPathHasExtension(file, ".pcm"))
 +    {
          soundPoolStreaming.addSound(s, file);
 +#if defined(__ANDROID__)
@@ -2213,7 +2243,7 @@ diff -ruN orig/src/platform/audio/SoundManager_PC.cpp new/src/platform/audio/Sou
  
  void SoundManager::addMusic(const jstring &s, const std::string &file)
  {
-     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav"))
+     if (audioPathHasExtension(file, ".ogg") || audioPathHasExtension(file, ".wav") || audioPathHasExtension(file, ".pcm"))
 +    {
          soundPoolMusic.addSound(s, file);
 +#if defined(__ANDROID__)
