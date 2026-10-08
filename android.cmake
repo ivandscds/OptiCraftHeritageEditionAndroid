@@ -122,6 +122,12 @@ target_compile_options(main PRIVATE
 target_include_directories(main PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/src/pc"
+    # Mod-loader and skin support (src/mods, src/net/minecraft/src/skin) reach into the
+    # existing GUI/game classes (GuiScreen.h, GuiButton.h, GuiSlot.h, Minecraft.h) with plain
+    # unqualified includes. That only resolves on its own for files sitting in the same folder
+    # as what they include (how the rest of this tree gets away without this path); the mod/skin
+    # files live elsewhere, so the compiler needs to be told where net/minecraft/src is too.
+    "${CMAKE_SOURCE_DIR}/src/net/minecraft/src"
     "${CMAKE_SOURCE_DIR}/external/stb"
     "${CMAKE_SOURCE_DIR}/external/miniaudio"
     "${CMAKE_SOURCE_DIR}/external/zlib/contrib/minizip"
